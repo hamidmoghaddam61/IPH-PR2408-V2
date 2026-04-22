@@ -1,0 +1,2472 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Ethernet.h>
+#include <EthernetUdp.h>
+#include <SD.h>
+#include <Preferences.h>
+#include <TCA9555.h>
+#include <time.h>
+#include <Update.h>
+#include <esp_task_wdt.h>
+#include <HardwareSerial.h>
+
+HardwareSerial sim800(2);
+String smsBuffer = "";
+bool smsIncoming = false;
+// ---------- SIM 800 ----------
+#define SIM800_RX 16
+#define SIM800_TX 17
+
+
+// ---------- Wi‑Fi AP ----------
+const char* AP_SSID_DEFAULT = "IPH-PR2408";
+const char* AP_PASS_DEFAULT = "1234567890";
+
+WiFiServer wifiServer(80);
+
+// ---------- Ethernet / W5500 ----------
+#define W5500_CS 5
+#define W5500_RST 27
+
+byte mac[]   = { 0xDE, 0xAD, 0xBE, 0xEF, 0x55, 0x00 };
+IPAddress ipDefault(192,168,0,20);
+IPAddress gwDefault(192,168,0,1);
+IPAddress subnetDefault(255,255,255,0);
+IPAddress dnsDefault(192,168,0,1);
+
+EthernetServer ethServer(80);
+
+// Heartbeat / Link monitor
+EthernetUDP Udp;
+IPAddress hbGateway;
+unsigned long lastHeartbeat = 0;
+unsigned long lastLinkCheck = 0;
+bool ethernetOk = true;
+
+// ---------- SD روی HSPI ----------
+SPIClass hspi(HSPI);
+#define SD_CS 15
+
+// ---------- PCA9555 ----------
+#define PCA1_ADDR 0x20
+#define PCA2_ADDR 0x21
+#define RELAY_CH_COUNT 32
+
+TCA9555 p1(PCA1_ADDR);
+TCA9555 p2(PCA2_ADDR);
+
+bool relayState[RELAY_CH_COUNT];
+
+const uint8_t REG_OUTPUT_PORT0 = 0x02;
+const uint8_t REG_OUTPUT_PORT1 = 0x03;
+
+// ---------- Preferences ----------
+Preferences preferences;
+String defaultUser = "admin";
+String defaultPass = "admin";
+
+bool isLoggedIn = false;
+String currentUser = "";
+
+// ---------- تنظیمات شبکه / NTP / مشتری ----------
+struct NetConfig {
+  String ip_mode;   // "dhcp" یا "static"
+  IPAddress ip;
+  IPAddress subnet;
+  IPAddress gw;
+  IPAddress dns;
+};
+
+struct WifiConfig {
+  String ssid;
+  String pass;
+  NetConfig net;
+};
+
+struct EthConfig {
+  NetConfig net;
+};
+
+struct NtpConfig {
+  String server1;
+  String server2;
+  long   gmtOffsetSec;
+  int    daylightOffsetSec;
+};
+
+struct CustomerConfig {
+  String company;
+  String location;
+  String coords;
+  String mobile1;
+  String mobile2;
+  String mobile3;
+};
+
+WifiConfig wifiCfg;
+EthConfig  ethCfg;
+NtpConfig  ntpCfg;
+CustomerConfig custCfg;
+
+// ---------- Timer ساده دو مرحله‌ای ----------
+struct SimpleTimer {
+  bool  active;
+  int   channel;       // 0..31
+  bool  firstState;    // وضعیت اول
+  bool  secondState;   // وضعیت دوم
+  unsigned long startMs;
+  unsigned long delayMs;
+};
+
+SimpleTimer simpleTimer = { false, 0, false, false, 0, 0 };
+
+// ---------- Tooltip data ----------
+struct TooltipEntry {
+  char type;        // 'P' یا 'R'
+  uint8_t index;    // 1..24 برای P، 1..8 برای R
+  String texts[5];  // حداکثر 5 متن
+};
+
+TooltipEntry portTooltips[24];  // P1..P24
+TooltipEntry relayTooltips[8];  // R1..R8
+
+// ---------- Users (multi-user) ----------
+#define MAX_USERS 10
+
+struct UserEntry {
+  String username;
+  String password;
+  String role;       // "admin" یا "viewer"
+  String lastLogin;  // متن تاریخ/زمان آخرین ورود
+  bool   used;
+};
+
+UserEntry users[MAX_USERS];
+int primaryAdminIndex = 0;   // ادمین اصلی، قابل حذف نیست
+
+// ---------------------------------------------------------------------
+// کمک IP / Pref
+// ---------------------------------------------------------------------
+uint32_t ipToUint(IPAddress ip) { return (uint32_t)ip; }
+IPAddress uintToIp(uint32_t v) { return IPAddress(v); }
+
+// WIFI PREF
+void loadWifiConfig() {
+  preferences.begin("wifi", true);
+  wifiCfg.ssid = preferences.getString("ssid", AP_SSID_DEFAULT);
+  wifiCfg.pass = preferences.getString("pass", AP_PASS_DEFAULT);
+  wifiCfg.net.ip_mode = preferences.getString("ip_mode", "dhcp");
+
+  uint32_t ipv     = preferences.getULong("ip",     (uint32_t)ipDefault);
+  uint32_t subnetv = preferences.getULong("subnet", (uint32_t)subnetDefault);
+  uint32_t gwv     = preferences.getULong("gw",     (uint32_t)gwDefault);
+  uint32_t dnsv    = preferences.getULong("dns",    (uint32_t)dnsDefault);
+  preferences.end();
+
+  wifiCfg.net.ip     = uintToIp(ipv);
+  wifiCfg.net.subnet = uintToIp(subnetv);
+  wifiCfg.net.gw     = uintToIp(gwv);
+  wifiCfg.net.dns    = uintToIp(dnsv);
+}
+
+void saveWifiConfig(const WifiConfig &cfg) {
+  preferences.begin("wifi", false);
+  preferences.putString("ssid", cfg.ssid);
+  preferences.putString("pass", cfg.pass);
+  preferences.putString("ip_mode", cfg.net.ip_mode);
+  preferences.putULong("ip",     ipToUint(cfg.net.ip));
+  preferences.putULong("subnet", ipToUint(cfg.net.subnet));
+  preferences.putULong("gw",     ipToUint(cfg.net.gw));
+  preferences.putULong("dns",    ipToUint(cfg.net.dns));
+  preferences.end();
+}
+
+// ETH PREF
+void loadEthConfig() {
+  preferences.begin("eth", true);
+  ethCfg.net.ip_mode = preferences.getString("ip_mode", "static");
+
+  uint32_t ipv     = preferences.getULong("ip",     (uint32_t)ipDefault);
+  uint32_t subnetv = preferences.getULong("subnet", (uint32_t)subnetDefault);
+  uint32_t gwv     = preferences.getULong("gw",     (uint32_t)gwDefault);
+  uint32_t dnsv    = preferences.getULong("dns",    (uint32_t)dnsDefault);
+  preferences.end();
+
+  ethCfg.net.ip     = uintToIp(ipv);
+  ethCfg.net.subnet = uintToIp(subnetv);
+  ethCfg.net.gw     = uintToIp(gwv);
+  ethCfg.net.dns    = uintToIp(dnsv);
+}
+
+void saveEthConfig(const EthConfig &cfg) {
+  preferences.begin("eth", false);
+  preferences.putString("ip_mode", cfg.net.ip_mode);
+  preferences.putULong("ip",     ipToUint(cfg.net.ip));
+  preferences.putULong("subnet", ipToUint(cfg.net.subnet));
+  preferences.putULong("gw",     ipToUint(cfg.net.gw));
+  preferences.putULong("dns",    ipToUint(cfg.net.dns));
+  preferences.end();
+}
+
+// NTP PREF
+void loadNtpConfig() {
+  preferences.begin("ntp", true);
+  ntpCfg.server1 = preferences.getString("srv1", "pool.ntp.org");
+  ntpCfg.server2 = preferences.getString("srv2", "time.google.com");
+  ntpCfg.gmtOffsetSec      = preferences.getLong("gmt", 3 * 3600);
+  ntpCfg.daylightOffsetSec = preferences.getInt("dst", 0);
+  preferences.end();
+}
+
+void saveNtpConfig(const NtpConfig &cfg) {
+  preferences.begin("ntp", false);
+  preferences.putString("srv1", cfg.server1);
+  preferences.putString("srv2", cfg.server2);
+  preferences.putLong("gmt",   cfg.gmtOffsetSec);
+  preferences.putInt("dst",    cfg.daylightOffsetSec);
+  preferences.end();
+}
+
+// Customer PREF
+void loadCustomerConfig() {
+  preferences.begin("cust", true);
+  custCfg.company = preferences.getString("company", "");
+  custCfg.location= preferences.getString("location", "");
+  custCfg.coords  = preferences.getString("coords", "");
+  custCfg.mobile1 = preferences.getString("m1", "");
+  custCfg.mobile2 = preferences.getString("m2", "");
+  custCfg.mobile3 = preferences.getString("m3", "");
+  preferences.end();
+}
+
+void saveCustomerConfig(const CustomerConfig &c) {
+  preferences.begin("cust", false);
+  preferences.putString("company", c.company);
+  preferences.putString("location",c.location);
+  preferences.putString("coords",  c.coords);
+  preferences.putString("m1",      c.mobile1);
+  preferences.putString("m2",      c.mobile2);
+  preferences.putString("m3",      c.mobile3);
+  preferences.end();
+}
+
+// ---------------------------------------------------------------------
+// ذخیره/بازیابی وضعیت رله‌ها
+// ---------------------------------------------------------------------
+void loadRelayStateFromPrefs() {
+  preferences.begin("relays", true);
+  String s = preferences.getString("state", "");
+  preferences.end();
+  if (s.length() == RELAY_CH_COUNT) {
+    for (int i = 0; i < RELAY_CH_COUNT; i++) {
+      relayState[i] = (s.charAt(i) == '1');
+    }
+  } else {
+    for (int i = 0; i < RELAY_CH_COUNT; i++) relayState[i] = false;
+  }
+}
+
+void saveRelayStateToPrefs() {
+  String s;
+  s.reserve(RELAY_CH_COUNT);
+  for (int i = 0; i < RELAY_CH_COUNT; i++) {
+    s += (relayState[i] ? '1' : '0');
+  }
+  preferences.begin("relays", false);
+  preferences.putString("state", s);
+  preferences.end();
+}
+
+// ---------------------------------------------------------------------
+// Ethernet init / link-check
+// ---------------------------------------------------------------------
+void ethernetBeginFromConfig() {
+  Serial.println("Init Ethernet (from config)...");
+  SPI.begin(18, 19, 23, W5500_CS);
+  Ethernet.init(W5500_CS);
+
+  if (ethCfg.net.ip_mode == "dhcp") {
+    Ethernet.begin(mac);
+    Serial.println("Ethernet via DHCP");
+  } else {
+    Ethernet.begin(mac,
+                   ethCfg.net.ip,
+                   ethCfg.net.dns,
+                   ethCfg.net.gw,
+                   ethCfg.net.subnet);
+    Serial.print("Ethernet static IP: ");
+    Serial.println(ethCfg.net.ip);
+  }
+
+  hbGateway = ethCfg.net.gw;
+  Serial.print("Heartbeat gateway: ");
+  Serial.println(hbGateway);
+
+  Serial.print("Ethernet local IP: ");
+  Serial.println(Ethernet.localIP());
+
+  ethServer.begin();
+}
+
+void ethernetReinitIfDown() {
+  auto ls = Ethernet.linkStatus();
+  Serial.print("Ethernet link status: ");
+  if (ls == LinkON) {
+    Serial.println("ON");
+    ethernetOk = true;
+  } else if (ls == LinkOFF) {
+    Serial.println("OFF -> re-init");
+    ethernetOk = false;
+    ethernetBeginFromConfig();
+  } else {
+    Serial.println("UNKNOWN");
+  }
+}
+
+// ---------------------------------------------------------------------
+// رله‌ها
+// ---------------------------------------------------------------------
+void writeOutputsToChip(uint8_t addr, int baseChannel) {
+  uint8_t port0_active = 0;
+  uint8_t port1_active = 0;
+
+  for (int i = 0; i < 8; i++) {
+    int ch = baseChannel + i;
+    if (ch < RELAY_CH_COUNT && relayState[ch]) {
+      port0_active |= (1 << i);
+    }
+  }
+  for (int i = 0; i < 8; i++) {
+    int ch = baseChannel + 8 + i;
+    if (ch < RELAY_CH_COUNT && relayState[ch]) {
+      port1_active |= (1 << i);
+    }
+  }
+
+  uint8_t port0 = ~port0_active;
+  uint8_t port1 = ~port1_active;
+
+  Wire.beginTransmission(addr);
+  Wire.write(REG_OUTPUT_PORT0);
+  Wire.write(port0);
+  Wire.write(port1);
+  uint8_t err = Wire.endTransmission();
+
+  Serial.print("PCA addr=0x");
+  Serial.print(addr, HEX);
+  Serial.print(" baseCh=");
+  Serial.print(baseChannel);
+  Serial.print(" active0=0b");
+  Serial.print(port0_active, BIN);
+  Serial.print(" active1=0b");
+  Serial.print(port1_active, BIN);
+  Serial.print(" OUT0=0b");
+  Serial.print(port0, BIN);
+  Serial.print(" OUT1=0b");
+  Serial.print(port1, BIN);
+  Serial.print(" I2Cerr=");
+  Serial.println(err);
+}
+
+void applyAllOutputs() {
+  writeOutputsToChip(PCA1_ADDR, 0);   // ch 0..15
+  writeOutputsToChip(PCA2_ADDR, 16);  // ch 16..31
+}
+
+void initRelays() {
+  p1.begin();
+  p2.begin();
+  for (int i = 0; i < 16; i++) {
+    p1.pinMode1(i, OUTPUT);
+    p2.pinMode1(i, OUTPUT);
+  }
+
+  loadRelayStateFromPrefs();
+  applyAllOutputs();
+}
+
+String getRelaysStatusString() {
+  String s;
+  s.reserve(RELAY_CH_COUNT);
+  for (int i = 0; i < RELAY_CH_COUNT; i++) {
+    s += (relayState[i] ? '1' : '0');
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------
+// Login / Users (admin creds برای سازگاری قدیمی)
+// ---------------------------------------------------------------------
+String getUsername() {
+  preferences.begin("auth", true);
+  String u = preferences.getString("admin_user", defaultUser);
+  preferences.end();
+  return u;
+}
+
+String getPassword() {
+  preferences.begin("auth", true);
+  String p = preferences.getString("admin_pass", defaultPass);
+  preferences.end();
+  return p;
+}
+
+void setAdminCredentials(const String &user, const String &pass) {
+  preferences.begin("auth", false);
+  preferences.putString("admin_user", user);
+  preferences.putString("admin_pass", pass);
+  preferences.end();
+}
+
+// ---------------------------------------------------------------------
+// Tooltip helpers
+// ---------------------------------------------------------------------
+void initTooltipArrays() {
+  for (int i = 0; i < 24; i++) {
+    portTooltips[i].type = 'P';
+    portTooltips[i].index = i + 1;
+    for (int j = 0; j < 5; j++) portTooltips[i].texts[j] = "";
+  }
+  for (int i = 0; i < 8; i++) {
+    relayTooltips[i].type = 'R';
+    relayTooltips[i].index = i + 1;
+    for (int j = 0; j < 5; j++) relayTooltips[i].texts[j] = "";
+  }
+}
+
+void loadTooltipsFromFile() {
+  initTooltipArrays();
+
+  if (!SD.exists("/tooltips.txt")) {
+    Serial.println("tooltips.txt not found, using defaults.");
+    return;
+  }
+
+  File f = SD.open("/tooltips.txt", FILE_READ);
+  if (!f) {
+    Serial.println("Failed to open tooltips.txt");
+    return;
+  }
+
+  String line;
+  while (f.available()) {
+    char c = f.read();
+    if (c == '\n') {
+      line.trim();
+      if (line.length() > 0) {
+        char type = line.charAt(0); // P یا R
+        int sep1 = line.indexOf('|');
+        if (sep1 > 1) {
+          int idx = line.substring(1, sep1).toInt();
+          if (idx > 0) {
+            String rest = line.substring(sep1 + 1);
+            String parts[5];
+            int pCount = 0;
+            int start = 0;
+            while (start < rest.length() && pCount < 5) {
+              int p = rest.indexOf('|', start);
+              if (p < 0) p = rest.length();
+              parts[pCount++] = rest.substring(start, p);
+              start = p + 1;
+            }
+
+            if (type == 'P' && idx >= 1 && idx <= 24) {
+              TooltipEntry &e = portTooltips[idx - 1];
+              for (int i = 0; i < 5; i++) e.texts[i] = (i < pCount ? parts[i] : "");
+            } else if (type == 'R' && idx >= 1 && idx <= 8) {
+              TooltipEntry &e = relayTooltips[idx - 1];
+              for (int i = 0; i < 5; i++) e.texts[i] = (i < pCount ? parts[i] : "");
+            }
+          }
+        }
+      }
+      line = "";
+    } else {
+      line += c;
+    }
+  }
+
+  line.trim();
+  if (line.length() > 0) {
+    char type = line.charAt(0);
+    int sep1 = line.indexOf('|');
+    if (sep1 > 1) {
+      int idx = line.substring(1, sep1).toInt();
+      if (idx > 0) {
+        String rest = line.substring(sep1 + 1);
+        String parts[5];
+        int pCount = 0;
+        int start = 0;
+        while (start < rest.length() && pCount < 5) {
+          int p = rest.indexOf('|', start);
+          if (p < 0) p = rest.length();
+          parts[pCount++] = rest.substring(start, p);
+          start = p + 1;
+        }
+        if (type == 'P' && idx >= 1 && idx <= 24) {
+          TooltipEntry &e = portTooltips[idx - 1];
+          for (int i = 0; i < 5; i++) e.texts[i] = (i < pCount ? parts[i] : "");
+        } else if (type == 'R' && idx >= 1 && idx <= 8) {
+          TooltipEntry &e = relayTooltips[idx - 1];
+          for (int i = 0; i < 5; i++) e.texts[i] = (i < pCount ? parts[i] : "");
+        }
+      }
+    }
+  }
+
+  f.close();
+  Serial.println("Tooltips loaded.");
+}
+
+void saveTooltipsToFile() {
+  SD.remove("/tooltips.txt");
+  File f = SD.open("/tooltips.txt", FILE_WRITE);
+  if (!f) {
+    Serial.println("Failed to open tooltips.txt for write");
+    return;
+  }
+
+  for (int i = 0; i < 24; i++) {
+    TooltipEntry &e = portTooltips[i];
+    bool any = false;
+    for (int j = 0; j < 5; j++) {
+      if (e.texts[j].length()) { any = true; break; }
+    }
+    if (!any) continue;
+
+    f.print('P');
+    f.print(e.index);
+    f.print('|');
+    for (int j = 0; j < 5; j++) {
+      if (j > 0) f.print('|');
+      f.print(e.texts[j]);
+    }
+    f.println();
+  }
+
+  for (int i = 0; i < 8; i++) {
+    TooltipEntry &e = relayTooltips[i];
+    bool any = false;
+    for (int j = 0; j < 5; j++) {
+      if (e.texts[j].length()) { any = true; break; }
+    }
+    if (!any) continue;
+
+    f.print('R');
+    f.print(e.index);
+    f.print('|');
+    for (int j = 0; j < 5; j++) {
+      if (j > 0) f.print('|');
+      f.print(e.texts[j]);
+    }
+    f.println();
+  }
+
+  f.close();
+  Serial.println("Tooltips saved.");
+}
+
+// ---------------------------------------------------------------------
+// SD / ارسال فایل
+// ---------------------------------------------------------------------
+void sendFile(Stream &client, const char* path, const char* mime) {
+  File f = SD.open(path);
+  if (!f) {
+    client.println("HTTP/1.1 404 Not Found");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("File not found: ");
+    client.println(path);
+    return;
+  }
+
+  client.println("HTTP/1.1 200 OK");
+  client.print("Content-Type: ");
+  client.println(mime);
+  client.println("Connection: close");
+  client.println();
+
+  while (f.available()) client.write(f.read());
+  f.close();
+}
+
+// ---------------------------------------------------------------------
+// صفحات
+// ---------------------------------------------------------------------
+void handleLoginPage(Stream &client) {
+  sendFile(client, "/login.html", "text/html; charset=utf-8");
+}
+
+void handleDashboard(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /login");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  sendFile(client, "/dashboard.html", "text/html; charset=utf-8");
+}
+
+void handleSettingsPage(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /login");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  sendFile(client, "/settings.html", "text/html; charset=utf-8");
+}
+
+void handleLogPage(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /login");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  sendFile(client, "/log.html", "text/html; charset=utf-8");
+}
+
+void handleTimerPage(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /login");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  sendFile(client, "/timer.html", "text/html; charset=utf-8");
+}
+
+void handleTooltipPage(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /login");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  sendFile(client, "/tooltip.html", "text/html; charset=utf-8");
+}
+
+void handleLogout(Stream &client) {
+  isLoggedIn = false;
+  currentUser = "";
+  client.println("HTTP/1.1 302 Found");
+  client.println("Location: /login");
+  client.println("Connection: close");
+  client.println();
+}
+
+// ---------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------
+// URL-decode field from x-www-form-urlencoded body
+String getField(const String &body, const String &name) {
+  String key = name + "=";
+  int pos = body.indexOf(key);
+  if (pos < 0) return "";
+  int end = body.indexOf('&', pos);
+  if (end < 0) end = body.length();
+  String val = body.substring(pos + key.length(), end);
+
+  // + -> space
+  val.replace('+', ' ');
+
+  // %XX -> char
+  String out;
+  out.reserve(val.length());
+  for (int i = 0; i < val.length(); i++) {
+    char c = val[i];
+    if (c == '%' && i + 2 < val.length()) {
+      char h1 = val[i+1];
+      char h2 = val[i+2];
+      int hi = (h1 >= '0' && h1 <= '9') ? (h1 - '0') :
+               (h1 >= 'A' && h1 <= 'F') ? (h1 - 'A' + 10) :
+               (h1 >= 'a' && h1 <= 'f') ? (h1 - 'a' + 10) : -1;
+      int lo = (h2 >= '0' && h2 <= '9') ? (h2 - '0') :
+               (h2 >= 'A' && h2 <= 'F') ? (h2 - 'A' + 10) :
+               (h2 >= 'a' && h2 <= 'f') ? (h2 - 'a' + 10) : -1;
+      if (hi >= 0 && lo >= 0) {
+        out += char((hi << 4) | lo);
+        i += 2;
+      } else {
+        // اگر مشکلی بود، همان رشته را نگه می‌داریم
+        out += c;
+      }
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+// ---------------------------------------------------------------------
+// Users array helpers (اعلان؛ تعریف‌ها پایین‌تر می‌آید)
+// ---------------------------------------------------------------------
+void initUsersArray();
+void saveUsersToPrefs();
+void loadUsersFromPrefs();
+int  findUserIndex(const String &username);
+int  findFreeUserSlot();
+
+// ---------------------------------------------------------------------
+// نقش کاربر فعلی
+// ---------------------------------------------------------------------
+bool isAdmin() {
+  if (!isLoggedIn) return false;
+  if (currentUser.length() == 0) {
+    // حالت قدیمی: فقط ادمین اصلی وجود دارد
+    return true;
+  }
+  int idx = findUserIndex(currentUser);
+  if (idx < 0) return false;
+  return (users[idx].role == "admin");
+}
+
+// ---------------------------------------------------------------------
+// Login / Auth
+// ---------------------------------------------------------------------
+void handleLoginPost(Stream &client, const String &body) {
+  String user = getField(body, "user");
+  String pass = getField(body, "pass");
+
+  loadUsersFromPrefs(); // مطمئن شو لیست کاربران به‌روز است
+
+  int idx = findUserIndex(user);
+  if (idx >= 0 && users[idx].password == pass) {
+    isLoggedIn = true;
+    currentUser = user;
+
+    // ثبت آخرین ورود
+    users[idx].lastLogin = formatCurrentTime();
+    saveUsersToPrefs();
+
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /dashboard");
+    client.println("Connection: close");
+    client.println();
+  } else {
+    isLoggedIn = false;
+    currentUser = "";
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:نام کاربری یا رمز عبور اشتباه است");
+  }
+}
+
+// save-admin (فقط ادمین می‌تواند)
+void handleSaveAdmin(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  String user = getField(body, "admin_user");
+  String pass1= getField(body, "admin_pass");
+  String pass2= getField(body, "admin_pass2");
+
+  if (user.isEmpty() || pass1.isEmpty() || pass2.isEmpty()) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:همه فیلدها ضروری هستند.");
+    return;
+  }
+  if (pass1 != pass2) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:رمز و تکرار آن یکسان نیست.");
+    return;
+  }
+
+  setAdminCredentials(user, pass1);
+
+  // همچنین ادمین اصلی لیست کاربران را به‌روز می‌کنیم
+  loadUsersFromPrefs();
+  if (primaryAdminIndex < 0 || primaryAdminIndex >= MAX_USERS) primaryAdminIndex = 0;
+  users[primaryAdminIndex].username  = user;
+  users[primaryAdminIndex].password  = pass1;
+  users[primaryAdminIndex].role      = "admin";
+  users[primaryAdminIndex].used      = true;
+  saveUsersToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Admin updated. لطفاً برای اعمال، یک‌بار logout/login کنید.");
+}
+
+// Forgot
+void handleForgot(Stream &client, const String &body) {
+  String serial = getField(body, "serial");
+  String mobile = getField(body, "mobile");
+
+  Serial.print("FORGOT serial=");
+  Serial.print(serial);
+  Serial.print(" mobile=");
+  Serial.println(mobile);
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("اطلاعات دریافت شد؛ در نسخه‌های بعدی استفاده خواهد شد");
+}
+
+// ---------------------------------------------------------------------
+// relays.txt
+// ---------------------------------------------------------------------
+void handleRelaysTxt(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.println("ERROR:Forbidden");
+    return;
+  }
+
+  String st = getRelaysStatusString();
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print(st);
+}
+
+// ---------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------
+void handleHealth(Stream &client) {
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("localIP=");
+  client.println(Ethernet.localIP());
+  client.print("gateway=");
+  client.println(hbGateway);
+}
+
+// ---------------------------------------------------------------------
+// API: Save ETH / WiFi / NTP / Customer / Descriptions
+// ---------------------------------------------------------------------
+void handleSaveNetwork(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  EthConfig cfg = ethCfg;
+
+  String mode = getField(body, "mode");
+  if (mode != "dhcp" && mode != "static") mode = "static";
+  cfg.net.ip_mode = mode;
+
+  if (mode == "static") {
+    String ipStr   = getField(body, "ip");
+    String maskStr = getField(body, "subnet");
+    String gwStr   = getField(body, "gw");
+    String dnsStr  = getField(body, "dns");
+
+    if (ipStr.length())   cfg.net.ip.fromString(ipStr);
+    if (maskStr.length()) cfg.net.subnet.fromString(maskStr);
+    if (gwStr.length())   cfg.net.gw.fromString(gwStr);
+    if (dnsStr.length())  cfg.net.dns.fromString(dnsStr);
+  }
+
+  saveEthConfig(cfg);
+  ethCfg = cfg;
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Network saved. لطفاً دستگاه را ریبوت کنید تا تنظیمات IP اعمال شود.");
+}
+
+void handleSaveWifi(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  WifiConfig cfg = wifiCfg;
+
+  String ssid = getField(body, "ssid");
+  String pass = getField(body, "pass");
+
+  if (ssid.length()) cfg.ssid = ssid;
+  if (pass.length()) cfg.pass = pass;
+
+  saveWifiConfig(cfg);
+  wifiCfg = cfg;
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:WiFi AP saved. با ریست، SSID/PASS جدید فعال می‌شود.");
+}
+
+void handleSaveNtp(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  NtpConfig cfg = ntpCfg;
+
+  String s1   = getField(body, "ntp1");
+  String s2   = getField(body, "ntp2");
+  String gmt  = getField(body, "gmtOffset");
+  String dst  = getField(body, "dstOffset");
+
+  if (s1.length()) cfg.server1 = s1;
+  if (s2.length()) cfg.server2 = s2;
+
+  if (gmt.length()) {
+    long g = gmt.toInt();
+    cfg.gmtOffsetSec = g * 3600;
+  }
+  if (dst.length()) {
+    long d = dst.toInt();
+    cfg.daylightOffsetSec = d * 3600;
+  }
+
+  saveNtpConfig(cfg);
+  ntpCfg = cfg;
+
+  configTime(ntpCfg.gmtOffsetSec, ntpCfg.daylightOffsetSec,
+             ntpCfg.server1.c_str(), ntpCfg.server2.c_str());
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:NTP saved & applied.");
+}
+
+void handleSaveCustomer(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  CustomerConfig c = custCfg;
+  String s;
+
+  s = getField(body, "company"); if (s.length()) c.company = s;
+  s = getField(body, "location");if (s.length()) c.location= s;
+  s = getField(body, "coords");  if (s.length()) c.coords  = s;
+  s = getField(body, "mobile1"); if (s.length()) c.mobile1 = s;
+  s = getField(body, "mobile2"); if (s.length()) c.mobile2 = s;
+  s = getField(body, "mobile3"); if (s.length()) c.mobile3 = s;
+
+  saveCustomerConfig(c);
+  custCfg = c;
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Customer saved.");
+}
+
+// قبلاً برای ذخیره توضیحات پورت/رله در descriptions.txt استفاده می‌شد.
+void handleSaveDescriptions(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  String ports = getField(body, "ports_desc");
+  String relays= getField(body, "relays_desc");
+
+  SD.remove("/descriptions.txt");
+  File f = SD.open("/descriptions.txt", FILE_WRITE);
+  if (!f) {
+    client.println("HTTP/1.1 500 Internal Server Error");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:cannot open descriptions.txt");
+    return;
+  }
+
+  f.print(ports);
+  f.print("\n----\n");
+  f.print(relays);
+  f.close();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Descriptions saved (legacy).");
+}
+
+// NTP زمان فعلی
+String formatCurrentTime() {
+  time_t now = time(nullptr);
+  if (now == 0) return "TIME_NOT_SET";
+  struct tm t;
+  localtime_r(&now, &t);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+           t.tm_hour, t.tm_min, t.tm_sec);
+  return String(buf);
+}
+
+void handleTimeApi(Stream &client) {
+  String ts = formatCurrentTime();
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print(ts);
+}
+
+// Settings JSON
+void handleSettingsApi(Stream &client) {
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+
+  client.print("{\"wifi\":{");
+  client.print("\"ssid\":\""); client.print(wifiCfg.ssid); client.print("\",");
+  client.print("\"pass\":\""); client.print(wifiCfg.pass); client.print("\"},");
+
+  client.print("\"eth\":{");
+  client.print("\"mode\":\"");   client.print(ethCfg.net.ip_mode); client.print("\",");
+  client.print("\"ip\":\"");     client.print(ethCfg.net.ip);      client.print("\",");
+  client.print("\"subnet\":\""); client.print(ethCfg.net.subnet);  client.print("\",");
+  client.print("\"gw\":\"");     client.print(ethCfg.net.gw);      client.print("\",");
+  client.print("\"dns\":\"");    client.print(ethCfg.net.dns);     client.print("\"},");
+
+  client.print("\"ntp\":{");
+  client.print("\"ntp1\":\""); client.print(ntpCfg.server1); client.print("\",");
+  client.print("\"ntp2\":\""); client.print(ntpCfg.server2); client.print("\",");
+  client.print("\"gmt\":");    client.print(ntpCfg.gmtOffsetSec / 3600); client.print(",");
+  client.print("\"dst\":");    client.print(ntpCfg.daylightOffsetSec / 3600);
+  client.print("},");
+
+  client.print("\"cust\":{");
+  client.print("\"company\":\"");  client.print(custCfg.company);  client.print("\",");
+  client.print("\"location\":\""); client.print(custCfg.location); client.print("\",");
+  client.print("\"coords\":\"");   client.print(custCfg.coords);   client.print("\",");
+  client.print("\"m1\":\"");       client.print(custCfg.mobile1);  client.print("\",");
+  client.print("\"m2\":\"");       client.print(custCfg.mobile2);  client.print("\",");
+  client.print("\"m3\":\"");       client.print(custCfg.mobile3);  client.print("\"");
+  client.print("}}");
+}
+
+// ---------------------------------------------------------------------
+// Users API (لیست، افزودن، ویرایش، حذف) – فقط ادمین
+// ---------------------------------------------------------------------
+void handleUsersListApi(Stream &client) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  loadUsersFromPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+
+  client.print("[");
+  bool first = true;
+  for (int i = 0; i < MAX_USERS; i++) {
+    if (!users[i].used) continue;
+    if (!first) client.print(",");
+    first = false;
+
+    client.print("{\"username\":\"");
+    String u = users[i].username;
+    u.replace("\\", "\\\\");
+    u.replace("\"", "\\\"");
+    client.print(u);
+    client.print("\",\"role\":\"");
+    client.print(users[i].role);
+    client.print("\",\"lastLogin\":\"");
+    String l = users[i].lastLogin;
+    l.replace("\\", "\\\\");
+    l.replace("\"", "\\\"");
+    client.print(l);
+    client.print("\",\"primary\":");
+    client.print(i == primaryAdminIndex ? "true" : "false");
+    client.print("}");
+  }
+  client.print("]");
+}
+
+void handleAddUserApi(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  loadUsersFromPrefs();
+
+  String user = getField(body, "user");
+  String pass = getField(body, "pass");
+  String role = getField(body, "role");
+  if (role != "admin" && role != "viewer") role = "viewer";
+
+  if (user.length() == 0 || pass.length() == 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:نام کاربری و رمز عبور الزامی است.");
+    return;
+  }
+
+  if (findUserIndex(user) >= 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:این نام کاربری قبلا�� ثبت شده است.");
+    return;
+  }
+
+  int slot = findFreeUserSlot();
+  if (slot < 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:حداکثر تعداد کاربران (10) پر شده است.");
+    return;
+  }
+
+  users[slot].username  = user;
+  users[slot].password  = pass;
+  users[slot].role      = role;
+  users[slot].lastLogin = "";
+  users[slot].used      = true;
+
+  saveUsersToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:کاربر جدید اضافه شد.");
+}
+
+void handleUpdateUserApi(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  loadUsersFromPrefs();
+
+  String oldUser = getField(body, "oldUser");
+  String newUser = getField(body, "user");
+  String pass    = getField(body, "pass");
+  String role    = getField(body, "role");
+  if (role != "admin" && role != "viewer") role = "viewer";
+
+  int idx = findUserIndex(oldUser);
+  if (idx < 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:کاربر پیدا نشد.");
+    return;
+  }
+
+  if (newUser != oldUser && findUserIndex(newUser) >= 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:نام کاربری جدید تکراری است.");
+    return;
+  }
+
+  if (newUser.length() == 0) newUser = oldUser;
+  if (pass.length() == 0)   pass    = users[idx].password;
+
+  users[idx].username = newUser;
+  users[idx].password = pass;
+  users[idx].role     = role;
+
+  if (idx == primaryAdminIndex && role != "admin") {
+    users[idx].role = "admin";
+  }
+
+  saveUsersToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:کاربر به‌روزرسانی شد.");
+}
+
+void handleDeleteUserApi(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  loadUsersFromPrefs();
+
+  String user = getField(body, "user");
+  int idx = findUserIndex(user);
+  if (idx < 0) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:کاربر پیدا نشد.");
+    return;
+  }
+
+  if (idx == primaryAdminIndex) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:حذف ادمین اصلی مجاز نیست.");
+    return;
+  }
+
+  users[idx].used = false;
+  users[idx].username = "";
+  users[idx].password = "";
+  users[idx].role     = "";
+  users[idx].lastLogin= "";
+
+  saveUsersToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:کاربر حذف شد.");
+}
+
+// ---------------------------------------------------------------------
+// Device info
+// ---------------------------------------------------------------------
+String getDeviceSerial() {
+  uint64_t chipid = ESP.getEfuseMac();
+  char buf[20];
+  snprintf(buf, sizeof(buf), "%04X%08X",
+           (uint16_t)(chipid >> 32), (uint32_t)chipid);
+  return String(buf);
+}
+
+void handleDeviceInfo(Stream &client) {
+  String serial = getDeviceSerial();
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+
+  client.print("{\"name\":\"PoE Rackmount\",\"model\":\"IPH-PR2408\",");
+  client.print("\"hw\":\"V1.7\",\"fw\":\"V15.1\",\"serial\":\"");
+  client.print(serial);
+  client.println("\"}");
+}
+
+// ---------------------------------------------------------------------
+// ریبوت و ریست فکتوری
+// ---------------------------------------------------------------------
+void handleReboot(Stream &client) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("Rebooting...");
+
+  client.flush();
+  delay(200);
+  ESP.restart();
+}
+
+void handleFactoryReset(Stream &client, const String &body) {
+  (void)body;
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  preferences.begin("eth", false);  preferences.clear(); preferences.end();
+  preferences.begin("wifi", false); preferences.clear(); preferences.end();
+  preferences.begin("ntp", false);  preferences.clear(); preferences.end();
+  preferences.begin("cust", false); preferences.clear(); preferences.end();
+  preferences.begin("relays", false);preferences.clear(); preferences.end();
+  preferences.begin("users", false); preferences.clear(); preferences.end();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Factory reset done. لطفاً دستگاه را ریبوت کنید.");
+}
+
+// ---------------------------------------------------------------------
+// Firmware upload via OTA (multipart/form-data)
+// ---------------------------------------------------------------------
+void handleFirmwareUpload(Stream &client, const String &header, const String &body) {
+  (void)header;
+  (void)body;
+
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("ERROR:در این نسخه، آپدیت Firmware فقط از طریق endpoint خام /api/uploadFirmwareRaw (مثلاً با curl) پشتیبانی می‌شود.");
+}
+
+// OTA ساده: بدنه باینری مستقیم (بدون multipart)
+// استفاده با curl:
+//   curl -X POST -H "Content-Type: application/octet-stream" --data-binary @firmware.bin http://IP-ESP/api/uploadFirmwareRaw
+void handleFirmwareRaw(Stream &client, const String &header, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  // Content-Length را از header می‌خوانیم (اگر نبود، از طول body استفاده می‌کنیم)
+  String clKey = "Content-Length:";
+  int clPos = header.indexOf(clKey);
+  int contentLen = body.length();
+  if (clPos >= 0) {
+    int lineEnd = header.indexOf("\r\n", clPos);
+    if (lineEnd < 0) lineEnd = header.length();
+    String clStr = header.substring(clPos + clKey.length(), lineEnd);
+    clStr.trim();
+    int v = clStr.toInt();
+    if (v > 0) contentLen = v;
+  }
+
+  Serial.print("RAW firmware upload, body size=");
+  Serial.println(body.length());
+  Serial.print("Content-Length=");
+  Serial.println(contentLen);
+
+  if (contentLen <= 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Content-Length نامعتبر است.");
+    return;
+  }
+
+  if (!Update.begin(contentLen)) {
+    Serial.println("Update.begin failed");
+    client.println("HTTP/1.1 500 Internal Server Error");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Update.begin failed");
+    return;
+  }
+
+  int remaining = contentLen;
+
+  // 1) هرچه در body هست، بنویسیم
+  if (body.length() > 0) {
+    int chunk = (body.length() > remaining) ? remaining : body.length();
+    String chunkStr = body.substring(0, chunk);
+    size_t written = Update.write((uint8_t*)chunkStr.c_str(), chunk);
+    if (written != (size_t)chunk) {
+      Serial.println("Update.write failed on first chunk");
+      Update.abort();
+      client.println("HTTP/1.1 500 Internal Server Error");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:Update.write failed");
+      return;
+    }
+    remaining -= chunk;
+  }
+
+  // 2) اگر هنوز بایتی مانده، مستقیم از client بخوانیم (بایت به بایت – سازگار با Stream)
+  while (remaining > 0) {
+    if (!client.available()) {
+      delay(1);
+      continue;
+    }
+    int c = client.read();
+    if (c < 0) {
+      // داده زودتر از حد انتظار تمام شده
+      Serial.println("Client closed before all data received");
+      Update.abort();
+      client.println("HTTP/1.1 400 Bad Request");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:داده کامل دریافت نشد.");
+      return;
+    }
+    uint8_t b = (uint8_t)c;
+    size_t w = Update.write(&b, 1);
+    if (w != 1) {
+      Serial.println("Update.write failed in stream loop");
+      Update.abort();
+      client.println("HTTP/1.1 500 Internal Server Error");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:Update.write failed");
+      return;
+    }
+    remaining--;
+  }
+
+  if (!Update.end(true)) {
+    Serial.print("Update.end failed, error=");
+    Serial.println(Update.errorString());
+    client.println("HTTP/1.1 500 Internal Server Error");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Update.end failed");
+    return;
+  }
+
+  Serial.println("RAW Update success, reboot required.");
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Firmware uploaded via RAW. لطفاً دستگاه را ریبوت کنید.");
+}
+
+// ---------------------------------------------------------------------
+// آپلود فایل وب روی SD
+// Endpoint: POST /api/uploadWebFile?name=/dashboard.html&key=1234
+// بدنه‌ی درخواست: باینری خام فایل (application/octet-stream)
+// ---------------------------------------------------------------------
+void handleUploadWebFile(Stream &client,
+                         const String &header,
+                         const String &body,
+                         const String &firstLine)
+{
+  // 1) چک key ساده (مثل OTA)
+  if (firstLine.indexOf("key=1234") < 0) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:کلید آپلود وب نامعتبر است.");
+    return;
+  }
+
+  // 2) گرفتن نام فایل از query string
+  // firstLine شبیه است به:
+  // "POST /api/uploadWebFile?name=/dashboard.html&key=1234 HTTP/1.1"
+  int pathStart = firstLine.indexOf(' ');
+  int pathEnd   = firstLine.indexOf(' ', pathStart + 1);
+  if (pathStart < 0 || pathEnd < 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:خطا در تجزیه firstLine.");
+    return;
+  }
+  String pathPart = firstLine.substring(pathStart + 1, pathEnd); // "/api/uploadWebFile?name=...&key=..."
+  int qPos = pathPart.indexOf('?');
+  String query = (qPos >= 0) ? pathPart.substring(qPos + 1) : "";
+
+  String fileName = "";
+  if (query.length() > 0) {
+    // query به شکل name=/x.html&key=1234
+    int nPos = query.indexOf("name=");
+    if (nPos >= 0) {
+      int start = nPos + 5;
+      int amp   = query.indexOf('&', start);
+      if (amp < 0) amp = query.length();
+      fileName = query.substring(start, amp);
+    }
+  }
+
+  if (fileName.length() == 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:پارامتر name یافت نشد.");
+    return;
+  }
+
+  // اطمینان از اینکه با / شروع می‌شود و چیزی خطرناک مثل .. ندارد
+  if (!fileName.startsWith("/")) fileName = "/" + fileName;
+  if (fileName.indexOf("..") >= 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:نام فایل نامعتبر است.");
+    return;
+  }
+
+  Serial.print("Upload web file to: ");
+  Serial.println(fileName);
+
+  // 3) تعیین طول داده (مثل OTA)
+  String clKey = "Content-Length:";
+  int clPos = header.indexOf(clKey);
+  int contentLen = body.length();
+  if (clPos >= 0) {
+    int lineEnd = header.indexOf("\r\n", clPos);
+    if (lineEnd < 0) lineEnd = header.length();
+    String clStr = header.substring(clPos + clKey.length(), lineEnd);
+    clStr.trim();
+    int v = clStr.toInt();
+    if (v > 0) contentLen = v;
+  }
+
+  if (contentLen <= 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Content-Length نامعتبر است.");
+    return;
+  }
+
+  if (!SD.begin(SD_CS, hspi)) {
+    client.println("HTTP/1.1 500 Internal Server Error");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:SD در دسترس نیست.");
+    return;
+  }
+
+  // 4) باز کردن فایل برای نوشتن
+  SD.remove(fileName);
+  File f = SD.open(fileName, FILE_WRITE);
+  if (!f) {
+    client.println("HTTP/1.1 500 Internal Server Error");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:باز کردن فایل برای نوشتن ناموفق بود.");
+    return;
+  }
+
+  int remaining = contentLen;
+
+  // 4-الف) هرچه در body هست، بنویس
+  if (body.length() > 0) {
+    int chunk = (body.length() > remaining) ? remaining : body.length();
+    if (chunk > 0) {
+      f.write((const uint8_t*)body.c_str(), chunk);
+      remaining -= chunk;
+    }
+  }
+
+  // 4-ب) بقیه داده را مستقیم از client بخوان
+  while (remaining > 0) {
+    if (!client.available()) {
+      delay(1);
+      continue;
+    }
+    int c = client.read();
+    if (c < 0) {
+      f.close();
+      client.println("HTTP/1.1 400 Bad Request");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:داده کامل دریافت نشد.");
+      return;
+    }
+    uint8_t b = (uint8_t)c;
+    f.write(&b, 1);
+    remaining--;
+  }
+
+  f.close();
+
+  Serial.print("Web file uploaded OK, size=");
+  Serial.println(contentLen);
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Web file uploaded.");
+}
+
+
+// ---------- Log: relay.log ----------
+void ensureRelayLogHeader() {
+  if (!SD.exists("/relay.log")) {
+    File f = SD.open("/relay.log", FILE_WRITE);
+    if (!f) return;
+    f.println("DATETIME            |  USER       |  PORT/RELAY  |  ACTION        |  STATE");
+    f.close();
+  }
+}
+
+void appendRelayLog(const char* action, int ch) {
+  File f = SD.open("/relay.log", FILE_APPEND);
+  if (!f) return;
+
+  time_t now = time(nullptr);
+  struct tm t;
+  localtime_r(&now, &t);
+
+  char ts[32];
+  snprintf(ts, sizeof(ts), "%04d-%02d-%02d %02d:%02d:%02d",
+           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+           t.tm_hour, t.tm_min, t.tm_sec);
+
+  const char* type;
+  int index;
+  if (ch >= 0 && ch < 24) {
+    type = "PORT";
+    index = ch + 1;
+  } else {
+    type = "RELAY";
+    index = ch - 24 + 1;
+  }
+
+  String user = currentUser.length() ? currentUser : getUsername();
+  const char* state = (relayState[ch] ? "ON" : "OFF");
+
+  f.print(ts);
+  f.print("  |  user=");
+  f.print(user);
+  f.print("  |  ");
+  f.print(type);
+  f.print("=");
+  f.print(index);
+  f.print("  |  action=");
+  f.print(action);
+  f.print("  |  state=");
+  f.println(state);
+
+  f.close();
+}
+
+// ---------------------------------------------------------------------
+// Toggle و کنترل همه پورت‌ها/رله‌ها
+// ---------------------------------------------------------------------
+void toggleRelay(int ch) {
+  if (ch < 0 || ch >= RELAY_CH_COUNT) return;
+  relayState[ch] = !relayState[ch];
+  applyAllOutputs();
+  saveRelayStateToPrefs();
+  appendRelayLog("toggle", ch);
+}
+
+void handleToggleAllPorts(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+  String mode = getField(body, "mode");
+  bool on = (mode == "on");
+
+  for (int ch = 0; ch < 24; ch++) {
+    relayState[ch] = on;
+    appendRelayLog(on ? "all_ports_on" : "all_ports_off", ch);
+  }
+  applyAllOutputs();
+  saveRelayStateToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK");
+}
+
+void handleToggleAllRelays(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+  String mode = getField(body, "mode");
+  bool on = (mode == "on");
+
+  for (int ch = 24; ch < 32; ch++) {
+    relayState[ch] = on;
+    appendRelayLog(on ? "all_relays_on" : "all_relays_off", ch);
+  }
+  applyAllOutputs();
+  saveRelayStateToPrefs();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK");
+}
+
+void handleRelayLogApi(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Forbidden");
+    return;
+  }
+  File f = SD.open("/relay.log", FILE_READ);
+  if (!f) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("NO_LOG");
+    return;
+  }
+
+  String content;
+  while (f.available()) content += (char)f.read();
+  f.close();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print(content);
+}
+
+// ---------------------------------------------------------------------
+// Timer API
+// ---------------------------------------------------------------------
+void handleSetTimer(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  String targetStr = getField(body, "target");    // "P1".."P24" یا "R1".."R8"
+  String firstStr  = getField(body, "first");     // "on" / "off"
+  String durStr    = getField(body, "duration");  // ثانیه
+  String secondStr = getField(body, "second");    // "on" / "off"
+
+  if (targetStr.length() < 2) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:هدف نامعتبر است");
+    return;
+  }
+
+  char tType = targetStr.charAt(0); // 'P' یا 'R'
+  int index  = targetStr.substring(1).toInt(); // 1..24 یا 1..8
+  int ch = -1;
+
+  if (tType == 'P') {
+    if (index < 1 || index > 24) {
+      client.println("HTTP/1.1 400 Bad Request");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:شماره پورت نامعتبر است");
+      return;
+    }
+    ch = index - 1;
+  } else if (tType == 'R') {
+    if (index < 1 || index > 8) {
+      client.println("HTTP/1.1 400 Bad Request");
+      client.println("Connection: close");
+      client.println();
+      client.print("ERROR:شماره رله نامعتبر است");
+      return;
+    }
+    ch = 24 + (index - 1);
+  } else {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:هدف نامعتبر است");
+    return;
+  }
+
+  unsigned long sec = durStr.toInt();
+  if (sec == 0) sec = 1;
+
+  simpleTimer.active      = true;
+  simpleTimer.channel     = ch;
+  simpleTimer.firstState  = (firstStr  == "on");
+  simpleTimer.secondState = (secondStr == "on");
+  simpleTimer.startMs     = millis();
+  simpleTimer.delayMs     = sec * 1000UL;
+
+  relayState[ch] = simpleTimer.firstState;
+  applyAllOutputs();
+  saveRelayStateToPrefs();
+  appendRelayLog("timer_first", ch);
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Timer set.");
+}
+
+void checkSimpleTimer() {
+  if (!simpleTimer.active) return;
+  unsigned long now = millis();
+  if ((now - simpleTimer.startMs) >= simpleTimer.delayMs) {
+    relayState[simpleTimer.channel] = simpleTimer.secondState;
+    applyAllOutputs();
+    saveRelayStateToPrefs();
+    appendRelayLog("timer_second", simpleTimer.channel);
+    simpleTimer.active = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Tooltip APIs
+// ---------------------------------------------------------------------
+void handleTooltipsGet(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:Forbidden");
+    return;
+  }
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+
+  client.print("{\"ports\":[");
+  for (int i = 0; i < 24; i++) {
+    if (i > 0) client.print(",");
+    TooltipEntry &e = portTooltips[i];
+    client.print("{\"id\":");
+    client.print((int)e.index);
+    client.print(",\"texts\":[");
+    for (int j = 0; j < 5; j++) {
+      if (j > 0) client.print(",");
+      client.print("\"");
+      String t = e.texts[j];
+      t.replace("\\", "\\\\");
+      t.replace("\"", "\\\"");
+      client.print(t);
+      client.print("\"");
+    }
+    client.print("]}");
+  }
+  client.print("],\"relays\":[");
+  for (int i = 0; i < 8; i++) {
+    if (i > 0) client.print(",");
+    TooltipEntry &e = relayTooltips[i];
+    client.print("{\"id\":");
+    client.print((int)e.index);
+    client.print(",\"texts\":[");
+    for (int j = 0; j < 5; j++) {
+      if (j > 0) client.print(",");
+      client.print("\"");
+      String t = e.texts[j];
+      t.replace("\\", "\\\\");
+      t.replace("\"", "\\\"");
+      client.print(t);
+      client.print("\"");
+    }
+    client.print("]}");
+  }
+  client.print("]}");
+}
+
+void handleTooltipsSave(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  initTooltipArrays();
+
+  for (int i = 0; i < 24; i++) {
+    TooltipEntry &e = portTooltips[i];
+    for (int j = 0; j < 5; j++) {
+      String key = "P" + String(e.index) + "_" + String(j);
+      String v = getField(body, key);
+      e.texts[j] = v;
+    }
+  }
+
+  for (int i = 0; i < 8; i++) {
+    TooltipEntry &e = relayTooltips[i];
+    for (int j = 0; j < 5; j++) {
+      String key = "R" + String(e.index) + "_" + String(j);
+      String v = getField(body, key);
+      e.texts[j] = v;
+    }
+  }
+
+  saveTooltipsToFile();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK:Tooltips saved.");
+}
+
+// ---------------------------------------------------------------------
+// Toggle تکی
+// ---------------------------------------------------------------------
+void handleToggle(Stream &client, const String &firstLine) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:فقط ادمین می‌تواند وضعیت پورت‌ها را تغییر دهد.");
+    return;
+  }
+
+  int chPos = firstLine.indexOf("ch=");
+  if (chPos < 0) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+  int endPos = firstLine.indexOf(' ', chPos);
+  if (endPos < 0) endPos = firstLine.length();
+  String chStr = firstLine.substring(chPos + 3, endPos);
+  int ch = chStr.toInt();
+  if (ch < 0 || ch >= RELAY_CH_COUNT) {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Connection: close");
+    client.println();
+    return;
+  }
+
+  toggleRelay(ch);
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print("OK");
+}
+
+
+// ---------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------
+template<typename ClientType>
+void handleClient(ClientType &client) {
+  if (!client) return;
+
+  String header, body;
+  bool headerEnded = false;
+  unsigned long start = millis();
+
+  while (client.connected() && (millis() - start < 2000)) {
+    while (client.available()) {
+      char c = client.read();
+      if (!headerEnded) {
+        header += c;
+        if (header.endsWith("\r\n\r\n")) headerEnded = true;
+      } else {
+        body += c;
+      }
+    }
+    if (headerEnded) break;
+    yield();
+  }
+
+  int lineEnd = header.indexOf("\r\n");
+  String firstLine = (lineEnd > 0) ? header.substring(0, lineEnd) : header;
+
+  if (firstLine.startsWith("GET / ") || firstLine.startsWith("GET /login "))
+    handleLoginPage(client);
+  else if (firstLine.startsWith("POST /login"))
+    handleLoginPost(client, body);
+  else if (firstLine.startsWith("POST /forgot"))
+    handleForgot(client, body);
+  else if (firstLine.startsWith("GET /logout"))
+    handleLogout(client);
+  else if (firstLine.startsWith("GET /dashboard"))
+    handleDashboard(client);
+  else if (firstLine.startsWith("GET /settings"))
+    handleSettingsPage(client);
+  else if (firstLine.startsWith("GET /log"))
+    handleLogPage(client);
+  else if (firstLine.startsWith("GET /timer"))
+    handleTimerPage(client);
+  else if (firstLine.startsWith("GET /tooltip"))
+    handleTooltipPage(client);
+  else if (firstLine.startsWith("GET /css/style.css"))
+    sendFile(client, "/css/style.css", "text/css; charset=utf-8");
+  else if (firstLine.startsWith("GET /img/")) {
+    if (firstLine.indexOf(".png") >= 0) {
+      int sp  = firstLine.indexOf("GET ");
+      int sp2 = firstLine.indexOf(" ", sp + 4);
+      String path = firstLine.substring(sp + 4, sp2);
+      sendFile(client, path.c_str(), "image/png");
+    } else {
+      client.println("HTTP/1.1 415 Unsupported Media Type");
+      client.println("Connection: close");
+      client.println();
+    }
+  }
+  else if (firstLine.startsWith("GET /relays.txt"))
+    handleRelaysTxt(client);
+  else if (firstLine.startsWith("GET /health"))
+    handleHealth(client);
+  else if (firstLine.startsWith("GET /api/time"))
+    handleTimeApi(client);
+  else if (firstLine.startsWith("GET /api/deviceInfo"))
+    handleDeviceInfo(client);
+  else if (firstLine.startsWith("GET /api/settings"))
+    handleSettingsApi(client);
+  else if (firstLine.startsWith("GET /api/relayLog"))
+    handleRelayLogApi(client);
+  else if (firstLine.startsWith("GET /api/tooltips"))
+    handleTooltipsGet(client);
+  else if (firstLine.startsWith("GET /api/users"))
+    handleUsersListApi(client);
+  else if (firstLine.startsWith("POST /api/saveNetwork"))
+    handleSaveNetwork(client, body);
+  else if (firstLine.startsWith("POST /api/saveWifi"))
+    handleSaveWifi(client, body);
+  else if (firstLine.startsWith("POST /api/saveNtp"))
+    handleSaveNtp(client, body);
+  else if (firstLine.startsWith("POST /api/saveCustomer"))
+    handleSaveCustomer(client, body);
+  else if (firstLine.startsWith("POST /api/saveDescriptions"))
+    handleSaveDescriptions(client, body);
+  else if (firstLine.startsWith("POST /api/reboot"))
+    handleReboot(client);
+  else if (firstLine.startsWith("POST /api/factoryReset"))
+    handleFactoryReset(client, body);
+  else if (firstLine.startsWith("POST /api/toggleAllPorts"))
+    handleToggleAllPorts(client, body);
+  else if (firstLine.startsWith("POST /api/toggleAllRelays"))
+    handleToggleAllRelays(client, body);
+  else if (firstLine.startsWith("POST /api/setTimer"))
+    handleSetTimer(client, body);
+  else if (firstLine.startsWith("POST /api/saveTooltips"))
+    handleTooltipsSave(client, body);
+  else if (firstLine.startsWith("POST /save-admin"))
+    handleSaveAdmin(client, body);
+  else if (firstLine.startsWith("POST /api/addUser"))
+    handleAddUserApi(client, body);
+  else if (firstLine.startsWith("POST /api/updateUser"))
+    handleUpdateUserApi(client, body);
+  else if (firstLine.startsWith("POST /api/deleteUser"))
+    handleDeleteUserApi(client, body);
+  else if (firstLine.startsWith("POST /upload-firmware"))
+    handleFirmwareUpload(client, header, body);
+  else if (firstLine.indexOf("/toggle?") >= 0)
+    handleToggle(client, firstLine);
+  else if (firstLine.startsWith("POST /api/uploadFirmwareRaw"))
+  handleFirmwareRaw(client, header, body);
+  else if (firstLine.startsWith("POST /api/uploadWebFile"))
+    handleUploadWebFile(client, header, body, firstLine);
+  else {
+    client.println("HTTP/1.1 404 Not Found");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.println("404");
+  }
+
+  delay(5);
+  client.stop();
+}
+
+// ---------------------------------------------------------------------
+// Users array definitions
+// ---------------------------------------------------------------------
+void initUsersArray() {
+  for (int i = 0; i < MAX_USERS; i++) {
+    users[i].username = "";
+    users[i].password = "";
+    users[i].role     = "";
+    users[i].lastLogin= "";
+    users[i].used     = false;
+  }
+  primaryAdminIndex = 0;
+}
+
+void saveUsersToPrefs() {
+  preferences.begin("users", false);
+  preferences.putInt("count", MAX_USERS);
+  preferences.putInt("primary", primaryAdminIndex);
+
+  for (int i = 0; i < MAX_USERS; i++) {
+    String base = "u" + String(i) + "_";
+    preferences.putBool((base + "used").c_str(), users[i].used);
+    if (users[i].used) {
+      preferences.putString((base + "name").c_str(), users[i].username);
+      preferences.putString((base + "pass").c_str(), users[i].password);
+      preferences.putString((base + "role").c_str(), users[i].role);
+      preferences.putString((base + "last").c_str(), users[i].lastLogin);
+    }
+  }
+
+  preferences.end();
+}
+
+void loadUsersFromPrefs() {
+  initUsersArray();
+
+  preferences.begin("users", true);
+  int cnt = preferences.getInt("count", 0);
+  primaryAdminIndex = preferences.getInt("primary", 0);
+
+  if (cnt == 0) {
+    String adminUser = getUsername();
+    String adminPass = getPassword();
+    users[0].username  = adminUser;
+    users[0].password  = adminPass;
+    users[0].role      = "admin";
+    users[0].lastLogin = "";
+    users[0].used      = true;
+    primaryAdminIndex  = 0;
+    preferences.end();
+    saveUsersToPrefs();
+    return;
+  }
+
+  for (int i = 0; i < MAX_USERS; i++) {
+    String base = "u" + String(i) + "_";
+    bool used = preferences.getBool((base + "used").c_str(), false);
+    if (!used) continue;
+    users[i].used      = true;
+    users[i].username  = preferences.getString((base + "name").c_str(), "");
+    users[i].password  = preferences.getString((base + "pass").c_str(), "");
+    users[i].role      = preferences.getString((base + "role").c_str(), "viewer");
+    users[i].lastLogin = preferences.getString((base + "last").c_str(), "");
+  }
+
+  preferences.end();
+}
+
+int findUserIndex(const String &username) {
+  for (int i = 0; i < MAX_USERS; i++) {
+    if (users[i].used && users[i].username == username) return i;
+  }
+  return -1;
+}
+
+int findFreeUserSlot() {
+  for (int i = 0; i < MAX_USERS; i++) {
+    if (!users[i].used) return i;
+  }
+  return -1;
+}
+
+//تابع پردازش SMS
+void processSMS(String sms) {
+
+  sms.trim();
+  Serial.println("SMS: " + sms);
+
+  // امنیت (شماره خودت رو بذار)
+  //if (sms.indexOf("+989121792668") == -1) return;
+
+  // ---- رله ها ----
+  if (sms.indexOf("رله1 روشن") != -1) {
+    setRelay(1, true);
+    sendSMS("+989121792668", "رله 1 روشن شد");
+  }
+
+  if (sms.indexOf("رله1 خاموش") != -1) {
+    setRelay(1, false);
+    sendSMS("+989121792668", "رله 1 خاموش شد");
+  }
+
+  // ---- پورت ها ----
+  if (sms.indexOf("پورت1 روشن") != -1) {
+    setPort(1, true);
+    sendSMS("+989121792668", "پورت 1 روشن شد");
+  }
+
+  if (sms.indexOf("پورت1 خاموش") != -1) {
+    setPort(1, false);
+    sendSMS("+989121792668", "پورت 1 خاموش شد");
+  }
+
+  // وضعیت کلی
+  if (sms.indexOf("وضعیت") != -1) {
+    sendSMS("+989121792668", getStatus());
+  }
+}
+
+// تابع ارسال SMS
+void sendSMS(String number, String text) {
+
+  sim800.println("AT+CMGF=1");
+  delay(200);
+
+  sim800.print("AT+CMGS=\"");
+  sim800.print(number);
+  sim800.println("\"");
+
+  delay(200);
+  sim800.print(text);
+  delay(200);
+
+  sim800.write(26);
+}
+
+void setRelay(int num, bool state) {
+
+  if (num < 1 || num > 8) return;
+
+  // اگر وضعیت همونه → کاری نکن
+  if (relayState[num - 1] == state) {
+    Serial.println("Relay " + String(num) + " already in this state");
+    return;
+  }
+
+  relayState[num - 1] = state;
+
+  // 👇 اینجا وصلش کن به PCA9555 واقعی
+  // مثال فرضی:
+  // pca1.digitalWrite(pin, state);
+
+  Serial.println("Relay " + String(num) + (state ? " ON" : " OFF"));
+}
+
+void setPort(int num, bool state) {
+
+  if (num < 1 || num > 24) return;
+
+  if (relayState[num - 1] == state) {
+    Serial.println("Port " + String(num) + " already set");
+    return;
+  }
+
+  relayState[num - 1] = state;
+
+  // 👇 اتصال به PCA9555
+  // pcaX.digitalWrite(pin, state);
+
+  Serial.println("Port " + String(num) + (state ? " ON" : " OFF"));
+}
+
+String getStatus() {
+  String status = "";
+
+  for (int i = 0; i < RELAY_CH_COUNT; i++) {
+    status += "R";
+    status += String(i + 1);
+    status += ": ";
+    status += (relayState[i] ? "ON" : "OFF");
+    status += "\n";
+  }
+
+  return status;
+}
+
+// ---------------------------------------------------------------------
+// setup & loop
+// ---------------------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\nBooting...");
+
+  pinMode(W5500_RST, OUTPUT);
+
+  digitalWrite(W5500_RST, LOW);
+  delay(200);
+  digitalWrite(W5500_RST, HIGH);
+  delay(200);
+
+  // Watchdog init
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 30000,     // 30 ثانیه
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1, 
+    .trigger_panic = true
+  };
+
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
+
+// SIM 800
+sim800.begin(9600, SERIAL_8N1, SIM800_RX, SIM800_TX);
+delay(1000);
+sim800.println("AT");
+delay(500);
+sim800.println("AT+CMGF=1");  // text mode
+delay(500);
+sim800.println("AT+CNMI=1,2,0,0,0");  // دریافت مستقیم SMS
+delay(500);
+
+
+  Wire.begin(21, 22);
+  initRelays();
+
+  hspi.begin(14, 4, 13, SD_CS);
+  if (SD.begin(SD_CS, hspi)) {
+    Serial.println("SD ready");
+    ensureRelayLogHeader();
+    loadTooltipsFromFile();
+  } else {
+    Serial.println("SD fail");
+  }
+
+  loadWifiConfig();
+  loadEthConfig();
+  loadNtpConfig();
+  loadCustomerConfig();
+  loadUsersFromPrefs();
+
+  ethernetBeginFromConfig();
+  Udp.begin(8888);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
+  if (WiFi.softAP(wifiCfg.ssid.c_str(), wifiCfg.pass.c_str())) {
+    Serial.print("AP SSID: ");
+    Serial.println(wifiCfg.ssid);
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("AP start failed!");
+  }
+  wifiServer.begin();
+
+  configTime(ntpCfg.gmtOffsetSec, ntpCfg.daylightOffsetSec,
+             ntpCfg.server1.c_str(), ntpCfg.server2.c_str());
+
+  Serial.print("Default admin user: ");
+  Serial.println(getUsername());
+
+}
+
+void loop() {
+  EthernetClient ethClient = ethServer.available();
+  if (ethClient) handleClient(ethClient);
+
+  WiFiClient wifiClient = wifiServer.available();
+  if (wifiClient) handleClient(wifiClient);
+
+  unsigned long now = millis();
+
+  if (now - lastHeartbeat > 30000) {
+    lastHeartbeat = now;
+    Serial.print("Heartbeat to ");
+    Serial.println(hbGateway);
+    Udp.beginPacket(hbGateway, 33445);
+    Udp.write("hb");
+    Udp.endPacket();
+  }
+
+  if (now - lastLinkCheck > 10000) {
+    lastLinkCheck = now;
+    ethernetReinitIfDown();
+  }
+if (millis() - lastLinkCheck > 5000) {
+  lastLinkCheck = millis();
+
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("ETH LINK DOWN → RESET W5500");
+
+    digitalWrite(W5500_RST, LOW);
+    delay(200);
+    digitalWrite(W5500_RST, HIGH);
+    delay(500);
+
+    Ethernet.begin(mac, ipDefault, dnsDefault, gwDefault, subnetDefault);
+  }
+}
+  esp_task_wdt_reset();
+
+  while (sim800.available()) {
+    char c = sim800.read();
+    smsBuffer += c;
+
+    if (smsBuffer.indexOf("+CMT:") != -1) {
+      smsIncoming = true;
+    }
+
+    // پایان پیام
+    if (smsIncoming && smsBuffer.endsWith("\r\n\r\n")) {
+
+      Serial.println("RAW SMS:");
+      Serial.println(smsBuffer);
+
+      processSMS(smsBuffer);
+
+      smsBuffer = "";
+      smsIncoming = false;
+    }
+  }
+}
