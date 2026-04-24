@@ -1,0 +1,259 @@
+#include <Arduino.h>
+#include <HardwareSerial.h>
+
+// ---------- ESP1 Link (UART1) ----------
+#define ESP2_UART_RX 26   // ESP2 RX  <- ESP1 TX (GPIO26)
+#define ESP2_UART_TX 25   // ESP2 TX  -> ESP1 RX (GPIO25)
+
+HardwareSerial linkSerial(1);
+
+// ================= Protocol (must match ESP1) =================
+namespace Esp2Link {
+
+static const uint8_t SOF1 = 0xA5;
+static const uint8_t SOF2 = 0x5A;
+static const uint8_t VER  = 0x01;
+
+enum MsgType : uint8_t {
+  MSG_PING      = 0x01,
+  MSG_PONG      = 0x02,
+  MSG_TELEM_REQ = 0x10,
+  MSG_TELEM_RSP = 0x11,
+  MSG_ACK       = 0x7E,
+  MSG_NACK      = 0x7F,
+};
+
+enum Flags : uint8_t {
+  FL_ACK_REQ = 0x01,
+};
+
+struct Frame {
+  uint8_t ver;
+  uint8_t type;
+  uint8_t seq;
+  uint8_t flags;
+  uint16_t len;
+  uint8_t payload[256];
+  uint16_t crc;
+};
+
+// CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF)
+static uint16_t crc16_ccitt_false(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= (uint16_t)data[i] << 8;
+    for (int b = 0; b < 8; b++) {
+      if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
+      else crc <<= 1;
+    }
+  }
+  return crc;
+}
+
+static void writeU16LE(Stream& s, uint16_t v) {
+  s.write((uint8_t)(v & 0xFF));
+  s.write((uint8_t)((v >> 8) & 0xFF));
+}
+
+static uint16_t readU16LE(const uint8_t* p) {
+  return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+class Link {
+public:
+  explicit Link(Stream& io) : _io(io) {}
+
+  void begin() { _seqTx = 0; }
+
+  bool poll(Frame& out) {
+    while (_io.available()) {
+      int b = _io.read();
+      if (b < 0) break;
+      if (_parseByte((uint8_t)b, out)) return true;
+    }
+    return false;
+  }
+
+  void send(uint8_t type, const uint8_t* payload, uint16_t len, uint8_t flags = 0, uint8_t seqOverride = 0xFF) {
+    uint8_t seq = (seqOverride == 0xFF) ? _seqTx++ : seqOverride;
+
+    uint8_t hdr[8];
+    hdr[0] = SOF1;
+    hdr[1] = SOF2;
+    hdr[2] = VER;
+    hdr[3] = type;
+    hdr[4] = seq;
+    hdr[5] = flags;
+    hdr[6] = (uint8_t)(len & 0xFF);
+    hdr[7] = (uint8_t)((len >> 8) & 0xFF);
+
+    uint8_t crcBuf[6 + 256];
+    crcBuf[0] = hdr[2]; // VER
+    crcBuf[1] = hdr[3]; // TYPE
+    crcBuf[2] = hdr[4]; // SEQ
+    crcBuf[3] = hdr[5]; // FLAGS
+    crcBuf[4] = hdr[6]; // LEN L
+    crcBuf[5] = hdr[7]; // LEN H
+    for (uint16_t i = 0; i < len && i < 256; i++) crcBuf[6 + i] = payload[i];
+
+    uint16_t crc = crc16_ccitt_false(crcBuf, 6 + len);
+
+    _io.write(hdr, 8);
+    if (len) _io.write(payload, len);
+    writeU16LE(_io, crc);
+  }
+
+  void sendAck(uint8_t seq)  { send(MSG_ACK,  nullptr, 0, 0, seq); }
+  void sendNack(uint8_t seq) { send(MSG_NACK, nullptr, 0, 0, seq); }
+
+private:
+  Stream& _io;
+  uint8_t _seqTx = 0;
+
+  // parser state
+  uint8_t _st = 0;
+  uint8_t _hdr[6]; // VER,TYPE,SEQ,FLAGS,LENL,LENH
+  uint16_t _need = 0;
+  uint16_t _pos = 0;
+  uint8_t _payload[256];
+  uint8_t _crcBytes[2];
+
+  bool _parseByte(uint8_t b, Frame& out) {
+    switch (_st) {
+      case 0: // SOF1
+        if (b == SOF1) _st = 1;
+        return false;
+
+      case 1: // SOF2
+        if (b == SOF2) { _st = 2; _pos = 0; }
+        else _st = 0;
+        return false;
+
+      case 2: // header 6 bytes
+        _hdr[_pos++] = b;
+        if (_pos == 6) {
+          if (_hdr[0] != VER) { _st = 0; return false; }
+          _need = readU16LE(&_hdr[4]);
+          if (_need > 256) { _st = 0; return false; }
+          _pos = 0;
+          _st = (_need > 0) ? 3 : 4;
+        }
+        return false;
+
+      case 3: // payload
+        _payload[_pos++] = b;
+        if (_pos == _need) { _pos = 0; _st = 4; }
+        return false;
+
+      case 4: // CRC16 2 bytes
+        _crcBytes[_pos++] = b;
+        if (_pos == 2) {
+          uint16_t rxCrc = readU16LE(_crcBytes);
+
+          uint8_t crcBuf[6 + 256];
+          for (int i = 0; i < 6; i++) crcBuf[i] = _hdr[i];
+          for (uint16_t i = 0; i < _need; i++) crcBuf[6 + i] = _payload[i];
+          uint16_t calc = crc16_ccitt_false(crcBuf, 6 + _need);
+
+          _st = 0;
+          if (calc != rxCrc) return false;
+
+          out.ver = _hdr[0];
+          out.type = _hdr[1];
+          out.seq = _hdr[2];
+          out.flags = _hdr[3];
+          out.len = _need;
+          for (uint16_t i = 0; i < _need; i++) out.payload[i] = _payload[i];
+          out.crc = rxCrc;
+          return true;
+        }
+        return false;
+
+      default:
+        _st = 0;
+        return false;
+    }
+  }
+};
+
+} // namespace Esp2Link
+
+Esp2Link::Link espLink(linkSerial);
+
+// ---- demo telemetry struct (little-endian) ----
+struct DemoTelem {
+  uint16_t v_mains_x10;  // 220.5V -> 2205
+  uint16_t v_batt_x100;  // 25.60V -> 2560
+  int16_t  t_batt_x10;   // 32.1C  -> 321
+  uint16_t hum_x10;      // 41.2%  -> 412
+};
+
+static void sendDemoTelem(uint8_t reqSeq) {
+  DemoTelem t;
+  t.v_mains_x10 = 2205;
+  t.v_batt_x100 = 2560;
+  t.t_batt_x10  = 321;
+  t.hum_x10     = 412;
+
+  // پاسخ را با SEQ جدید ارسال می‌کنیم (نه reqSeq). ACK جداگانه می‌زنیم.
+  espLink.send(Esp2Link::MSG_TELEM_RSP, (uint8_t*)&t, sizeof(t), 0);
+  Serial.println("[ESP2] TELEM_RSP sent");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("\n[ESP2] Boot");
+
+  // UART1 link to ESP1
+  linkSerial.begin(115200, SERIAL_8N1, ESP2_UART_RX, ESP2_UART_TX);
+  linkSerial.setTimeout(0);
+
+  espLink.begin();
+
+  Serial.print("[ESP2] UART1 RX=");
+  Serial.print(ESP2_UART_RX);
+  Serial.print(" TX=");
+  Serial.println(ESP2_UART_TX);
+}
+
+void loop() {
+  Esp2Link::Frame fr;
+  while (linkSerial.available()) {
+  int b = linkSerial.read();
+  Serial.print("RX byte: 0x");
+  if (b < 16) Serial.print("0");
+  Serial.println(b, HEX);
+}
+delay(10);
+return;
+  while (espLink.poll(fr)) {
+    // اگر ACK_REQ بود، حتماً ACK بدهیم (برای sendWithAck در ESP1)
+    if (fr.flags & Esp2Link::FL_ACK_REQ) {
+      espLink.sendAck(fr.seq);
+    }
+
+    if (fr.type == Esp2Link::MSG_PING) {
+      Serial.println("[ESP2] PING received -> PONG");
+      espLink.send(Esp2Link::MSG_PONG, nullptr, 0, 0);
+    } 
+    else if (fr.type == Esp2Link::MSG_TELEM_REQ) {
+      Serial.println("[ESP2] TELEM_REQ received -> TELEM_RSP");
+      sendDemoTelem(fr.seq);
+    }
+    else if (fr.type == Esp2Link::MSG_ACK) {
+      Serial.print("[ESP2] ACK received seq=");
+      Serial.println(fr.seq);
+    }
+    else if (fr.type == Esp2Link::MSG_NACK) {
+      Serial.print("[ESP2] NACK received seq=");
+      Serial.println(fr.seq);
+    }
+    else {
+      Serial.print("[ESP2] Unknown type=");
+      Serial.println(fr.type, HEX);
+    }
+  }
+
+  delay(1);
+}
