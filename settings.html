@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>تنظیمات</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body, input, button, textarea, select {
+      font-family: Tahoma, sans-serif !important;
+      font-size: 14px !important;
+    }
+    .hidden { display: none !important; }
+
+    .mosaic {
+      display: grid;
+      grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
+      grid-auto-rows: minmax(140px, auto);
+      gap: 16px;
+    }
+
+    .settings-table th,
+    .settings-table td {
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+  </style>
+</head>
+<body class="dash-body">
+  <div id="popup" class="popup hidden">
+    <div class="popup-content">
+      <div class="popup-title" id="popup-title"></div>
+      <div class="popup-message" id="popup-message"></div>
+      <div class="popup-buttons" id="popup-buttons">
+        <button onclick="hidePopup()" class="btn primary small">باشه</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dashboard-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="app-logo">SW</div>
+        <div class="app-name">تنظیمات</div>
+      </div>
+
+      <div class="topbar-right">
+        <div id="clock" class="clock-text"></div>
+
+        <div class="theme-switch" title="Dark/Light">
+          <label class="switch">
+            <input id="themeToggle" type="checkbox">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="side-menu">
+        <a href="/dashboard" class="side-item">
+          <span class="side-icon">📊</span>
+          <span class="side-text">داشبورد</span>
+        </a>
+        <a href="/settings" class="side-item active">
+          <span class="side-icon">⚙️</span>
+          <span class="side-text">تنظیمات</span>
+        </a>
+        <a href="/tooltip" class="side-item">
+          <span class="side-icon">💬</span>
+          <span class="side-text">راهنما (Tooltip)</span>
+        </a>
+        <a href="/log" class="side-item">
+          <span class="side-icon">📜</span>
+          <span class="side-text">لاگ</span>
+        </a>
+        <a href="/timer" class="side-item">
+          <span class="side-icon">⏱</span>
+          <span class="side-text">تایمر</span>
+        </a>
+        <a href="/logout" class="side-item">
+          <span class="side-icon">🚪</span>
+          <span class="side-text">خروج</span>
+        </a>
+      </nav>
+
+      <main class="settings-main mosaic">
+        <section class="card glass light">
+          <h3 class="card-title">کاربران و سطح دسترسی</h3>
+
+          <form class="settings-form" id="form-admin" method="POST" action="/save-admin">
+            <h4 class="settings-subtitle">ادمین اصلی</h4>
+            <div class="form-row">
+              <label>نام کاربری:</label>
+              <input type="text" name="admin_user" required>
+            </div>
+            <div class="form-row">
+              <label>رمز جدید:</label>
+              <input type="password" name="admin_pass" required>
+            </div>
+            <div class="form-row">
+              <label>تکرار رمز:</label>
+              <input type="password" name="admin_pass2" required>
+            </div>
+            <button type="submit" class="btn primary small">ذخیره ادمین</button>
+          </form>
+
+          <form class="settings-form" id="form-adduser" method="POST" action="/api/addUser">
+            <h4 class="settings-subtitle">کاربر جدید</h4>
+            <div class="form-row">
+              <label>نام کاربری:</label>
+              <input type="text" name="user" required>
+            </div>
+            <div class="form-row">
+              <label>رمز عبور:</label>
+              <input type="password" name="pass" required>
+            </div>
+            <div class="form-row">
+              <label>نقش:</label>
+              <select name="role">
+                <option value="viewer">بیننده</option>
+                <option value="admin">ادمین</option>
+              </select>
+            </div>
+            <button type="submit" class="btn secondary small">ایجاد کاربر</button>
+          </form>
+
+          <h4 class="settings-subtitle" style="margin-top:12px;">لیست کاربران</h4>
+          <div class="settings-text" id="usersInfo" style="margin-bottom:4px;">در حال بارگذاری...</div>
+          <table class="settings-table" id="usersTable" style="width:100%;font-size:14px;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:right;padding:4px 6px;">نام کاربری</th>
+                <th style="text-align:right;padding:4px 6px;">نقش</th>
+                <th style="text-align:right;padding:4px 6px;">آخرین ورود</th>
+                <th style="text-align:right;padding:4px 6px;">عملیات</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+
+        <section class="card glass">
+          <h3 class="card-title">Wi‑Fi (AP)</h3>
+          <form class="settings-form" id="form-wifi" method="POST" action="/api/saveWifi">
+            <div class="form-row">
+              <label>SSID:</label>
+              <input type="text" name="ssid" required>
+            </div>
+            <div class="form-row">
+              <label>رمز Wi‑Fi:</label>
+              <input type="password" name="pass" required>
+            </div>
+            <button type="submit" class="btn primary small">ذخیره Wi‑Fi</button>
+          </form>
+
+          <hr style="margin:12px 0;border-color:rgba(255,255,255,0.1);">
+
+          <h3 class="card-title">NTP</h3>
+          <form class="settings-form" id="form-ntp" method="POST" action="/api/saveNtp">
+            <div class="form-row">
+              <label>Server 1:</label>
+              <input type="text" name="ntp1" placeholder="pool.ntp.org">
+            </div>
+            <div class="form-row">
+              <label>Server 2:</label>
+              <input type="text" name="ntp2" placeholder="time.google.com">
+            </div>
+            <div class="form-row">
+              <label>GMT Offset (ساعت):</label>
+              <input type="number" step="0.5" name="gmtOffset" placeholder="3.5">
+            </div>
+            <div class="form-row">
+              <label>DST Offset (ساعت):</label>
+              <input type="number" step="1" name="dstOffset" placeholder="0">
+            </div>
+            <button type="submit" class="btn secondary small">ذخیره NTP</button>
+          </form>
+        </section>
+
+        <section class="card glass">
+          <h3 class="card-title">Ethernet</h3>
+          <form class="settings-form" id="form-eth" method="POST" action="/api/saveNetwork">
+            <div class="form-row">
+              <label>حالت IP:</label>
+              <div class="radio-group">
+                <label><input type="radio" name="mode" value="dhcp" checked> DHCP</label>
+                <label><input type="radio" name="mode" value="static"> Static</label>
+              </div>
+            </div>
+            <div class="ip-grid" id="ethStaticFields">
+              <div class="form-row">
+                <label>IP:</label>
+                <input type="text" name="ip">
+              </div>
+              <div class="form-row">
+                <label>Subnet:</label>
+                <input type="text" name="subnet">
+              </div>
+              <div class="form-row">
+                <label>Gateway:</label>
+                <input type="text" name="gw">
+              </div>
+              <div class="form-row">
+                <label>DNS:</label>
+                <input type="text" name="dns">
+              </div>
+            </div>
+            <button type="submit" class="btn primary small">ذخیره Ethernet</button>
+          </form>
+        </section>
+
+        <section class="card glass">
+          <h3 class="card-title">اطلاعات مالک</h3>
+          <form class="settings-form" id="form-customer" action="/api/saveCustomer" method="POST">
+            <div class="form-row">
+              <label>نام شرکت:</label>
+              <input type="text" name="company" id="company">
+            </div>
+            <div class="form-row">
+              <label>محل نصب:</label>
+              <input type="text" name="location" id="location">
+            </div>
+            <div class="form-row">
+              <label>مختصات محل نصب:</label>
+              <input type="text" name="coords" id="coords" placeholder="مثال: 35.7, 51.4">
+            </div>
+            <div class="form-row">
+              <label>موبایل ۱:</label>
+              <input type="text" name="mobile1" id="mobile1">
+            </div>
+            <div class="form-row hidden" id="row-mobile2">
+              <label>موبایل ۲:</label>
+              <input type="text" name="mobile2" id="mobile2">
+            </div>
+            <div class="form-row hidden" id="row-mobile3">
+              <label>موبایل ۳:</label>
+              <input type="text" name="mobile3" id="mobile3">
+            </div>
+            <div class="form-row" id="mobile-add-row">
+              <button type="button" class="btn secondary small" onclick="addMobileField()">+</button>
+            </div>
+            <button type="submit" class="btn secondary small">ذخیره اطلاعات مالک</button>
+          </form>
+        </section>
+
+        <section class="card glass">
+          <h3 class="card-title">به‌روزرسانی Firmware / Web</h3>
+          <form class="settings-form" id="form-fw" action="/api/uploadPackage?key=1234" method="POST" enctype="multipart/form-data">
+            <div class="form-row">
+              <label>فایل پکیج:</label>
+              <input type="file" name="fwfile" id="fwfile" accept=".bin,.fw,.package">
+            </div>
+            <p class="settings-text">
+              فایل پکیج (Firmware + Web) را انتخاب و آپلود کنید.
+            </p>
+            <button type="submit" class="btn primary small">آپلود و به‌روزرسانی</button>
+          </form>
+        </section>
+
+        <section class="card glass">
+          <h3 class="card-title">کنترل دستگاه</h3>
+          <div class="settings-form">
+            <button type="button" class="btn danger small" onclick="confirmReboot()">ریبوت دستگاه</button>
+            <button type="button" class="btn secondary small" onclick="confirmFactoryReset()">ریست فکتوری</button>
+          </div>
+        </section>
+
+        <section class="card glass light">
+          <h3 class="card-title">مشخصات دستگاه</h3>
+          <div class="settings-text">
+            <div>نام دستگاه: PoE Rackmount</div>
+            <div>مدل: IPH-PR2408</div>
+            <div>نسخه سخت‌افزار: V2.2</div>
+            <div>نسخه نرم‌افزار: V24.1</div>
+            <div>سریال دستگاه: <span id="device-serial">در حال دریافت...</span></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // -------- Theme (Dark/Light) --------
+    (function initTheme() {
+      const saved = localStorage.getItem('theme');
+      const theme = saved || 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+    }
+
+    function initThemeToggle(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      el.checked = (cur === 'light');
+      el.addEventListener('change', () => setTheme(el.checked ? 'light' : 'dark'));
+    }
+
+    // -------- Clock --------
+    function updateClock() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = ('0' + (now.getMonth()+1)).slice(-2);
+      const d = ('0' + now.getDate()).slice(-2);
+      const hh = ('0' + now.getHours()).slice(-2);
+      const mm = ('0' + now.getMinutes()).slice(-2);
+      const ss = ('0' + now.getSeconds()).slice(-2);
+      const el = document.getElementById('clock');
+      if (el) el.textContent = y + '/' + m + '/' + d + ' ' + hh + ':' + mm + ':' + ss;
+    }
+
+    // -------- Popup helpers --------
+    function showSimplePopup(title, msg) {
+      document.getElementById('popup-title').textContent = title || '';
+      document.getElementById('popup-message').textContent = msg || '';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML = '<button onclick="hidePopup()" class="btn primary small">باشه</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function showRebootPopup(msg) {
+      document.getElementById('popup-title').textContent = 'نیاز به ریبوت';
+      document.getElementById('popup-message').textContent = msg || 'برای اعمال تنظیمات جدید، دستگاه باید ریبوت شود.';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn danger small" onclick="doReboot()">ریبوت</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">بعداً</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function hidePopup() {
+      document.getElementById('popup').classList.add('hidden');
+    }
+
+    function doReboot() {
+      fetch('/api/reboot', { method: 'POST', cache: 'no-store' })
+        .then(() => {
+          document.getElementById('popup-message').textContent = 'دستگاه در حال ریبوت است...';
+          setTimeout(hidePopup, 5000);
+        })
+        .catch(() => {
+          document.getElementById('popup-message').textContent = 'ارسال فرمان ریبوت ناموفق بود، لطفاً دستی ریست کنید.';
+        });
+    }
+
+    function confirmReboot() {
+      showRebootPopup('آیا مطمئن هستید می‌خواهید دستگاه را ریبوت کنید؟');
+    }
+
+    function confirmFactoryReset() {
+      document.getElementById('popup-title').textContent = 'ریست فکتوری';
+      document.getElementById('popup-message').textContent =
+        'با ریست فکتوری، تمام تنظیمات شبکه، Wi‑Fi، NTP و اطلاعات مالک حذف می‌شود. ادامه می‌دهید؟';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn danger small" onclick="doFactoryReset()">بله، ریست فکتوری</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">انصراف</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function doFactoryReset() {
+      fetch('/api/factoryReset', { method: 'POST', cache: 'no-store' })
+        .then(r => r.text())
+        .then(t => {
+          document.getElementById('popup-message').textContent = t || 'ریست فکتوری انجام شد. لطفاً دستگاه را ریبوت کنید.';
+        })
+        .catch(() => {
+          document.getElementById('popup-message').textContent = 'خطا در ریست فکتوری، لطفاً دوباره تلاش کنید.';
+        });
+    }
+
+    // -------- AJAX form hook --------
+    function hookAjaxForm(selector, successTitle, needsReboot) {
+      const form = document.querySelector(selector);
+      if (!form) return;
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const data = new URLSearchParams(new FormData(form));
+        fetch(form.action, {
+          method: form.method || 'POST',
+          body: data,
+          cache: 'no-store'
+        })
+        .then(resp => resp.text())
+        .then(txt => {
+          if (txt.startsWith('ERROR:')) {
+            showSimplePopup('خطا', txt.substring(6));
+          } else {
+            if (needsReboot) showRebootPopup(txt || 'تنظیمات ذخیره شد. برای اعمال، دستگاه باید ریبوت شود.');
+            else showSimplePopup(successTitle, txt || 'تغییرات ذخیره شد');
+          }
+        })
+        .catch(err => {
+          console.log(err);
+          showSimplePopup('خطا', 'عدم دسترسی یا خطا در ارتباط با سرور');
+        });
+      });
+    }
+
+    // -------- Upload package as raw octet-stream (important) --------
+    function hookPackageFormRaw(selector) {
+      const form = document.querySelector(selector);
+      if (!form) return;
+
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        const fileInput = document.getElementById('fwfile');
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+          showSimplePopup('خطا', 'لطفاً فایل پکیج را انتخاب کنید.');
+          return;
+        }
+
+        const file = fileInput.files[0];
+        showSimplePopup('لطفاً صبر کنید', 'در حال ارسال پکیج... لطفاً صفحه را نبندید.');
+
+        const url = '/api/uploadPackage?key=1234';
+
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 180000); // 3 دقیقه
+
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: file,
+          cache: 'no-store',
+          signal: controller.signal
+        })
+        .then(r => r.text())
+        .then(txt => {
+          clearTimeout(t);
+          if (txt && txt.startsWith('ERROR:')) {
+            showSimplePopup('خطا', txt.substring(6));
+            return;
+          }
+          showSimplePopup('موفق', 'پکیج ارسال شد. دستگاه در حال ریبوت است... لطفاً 20-40 ثانیه صبر کنید و سپس صفحه را رفرش کنید.');
+          setTimeout(() => location.reload(), 30000);
+        })
+        .catch(err => {
+          clearTimeout(t);
+          console.log(err);
+          showSimplePopup('اطلاع', 'ارتباط قطع شد (احتمالاً دستگاه ریبوت شد). 20-40 ثانیه صبر کنید و سپس صفحه را رفرش کنید.');
+          setTimeout(() => location.reload(), 30000);
+        });
+      });
+    }
+
+    hookAjaxForm('#form-admin',   'ذخیره ادمین',   false);
+    hookAjaxForm('#form-adduser', 'ایجاد کاربر',   false);
+    hookAjaxForm('#form-wifi',    'ذخیره Wi‑Fi',   true);
+    hookAjaxForm('#form-eth',     'ذخیره Ethernet', true);
+    hookAjaxForm('#form-ntp',     'ذخیره NTP',     false);
+    hookAjaxForm('#form-customer','ذخیره اطلاعات مالک', false);
+    hookPackageFormRaw('#form-fw');
+
+    function setupIpModeToggle(groupName, staticContainerId) {
+      const radios = document.querySelectorAll('input[name="' + groupName + '"]');
+      const container = document.getElementById(staticContainerId);
+      function update() {
+        let mode = "dhcp";
+        radios.forEach(r => { if (r.checked) mode = r.value; });
+        container.style.display = (mode === "static") ? "grid" : "none";
+      }
+      radios.forEach(r => r.addEventListener('change', update));
+      update();
+    }
+
+    setupIpModeToggle("mode", "ethStaticFields");
+
+    function addMobileField() {
+      const row2 = document.getElementById('row-mobile2');
+      const row3 = document.getElementById('row-mobile3');
+      const addRow = document.getElementById('mobile-add-row');
+
+      if (row2.classList.contains('hidden')) {
+        row2.classList.remove('hidden');
+      } else if (row3.classList.contains('hidden')) {
+        row3.classList.remove('hidden');
+        addRow.classList.add('hidden');
+      }
+    }
+
+    function loadDeviceInfo() {
+      fetch('/api/deviceInfo', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(info => {
+          document.getElementById('device-serial').textContent = info.serial || 'نامشخص';
+        })
+        .catch(() => {
+          document.getElementById('device-serial').textContent = 'خطا در خواندن سریال';
+        });
+    }
+
+    function loadInitialValues() {
+      fetch('/api/settings', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(cfg => {
+          if (cfg.wifi) {
+            document.querySelector('#form-wifi [name="ssid"]').value = cfg.wifi.ssid || '';
+            document.querySelector('#form-wifi [name="pass"]').value = cfg.wifi.pass || '';
+          }
+          if (cfg.eth) {
+            const mode = cfg.eth.mode || 'static';
+            const mRadio = document.querySelector('#form-eth input[value="'+mode+'"]');
+            if (mRadio) mRadio.checked = true;
+            setupIpModeToggle("mode", "ethStaticFields");
+            document.querySelector('#form-eth [name="ip"]').value     = cfg.eth.ip     || '';
+            document.querySelector('#form-eth [name="subnet"]').value = cfg.eth.subnet || '';
+            document.querySelector('#form-eth [name="gw"]').value     = cfg.eth.gw     || '';
+            document.querySelector('#form-eth [name="dns"]').value    = cfg.eth.dns    || '';
+          }
+          if (cfg.ntp) {
+            document.querySelector('#form-ntp [name="ntp1"]').value      = cfg.ntp.ntp1 || '';
+            document.querySelector('#form-ntp [name="ntp2"]').value      = cfg.ntp.ntp2 || '';
+            document.querySelector('#form-ntp [name="gmtOffset"]').value = cfg.ntp.gmt  || '';
+            document.querySelector('#form-ntp [name="dstOffset"]').value = cfg.ntp.dst  || '';
+          }
+          if (cfg.cust) {
+            document.getElementById('company').value  = cfg.cust.company  || '';
+            document.getElementById('location').value = cfg.cust.location || '';
+            document.getElementById('coords').value   = cfg.cust.coords   || '';
+            if (cfg.cust.m1) document.getElementById('mobile1').value = cfg.cust.m1;
+            if (cfg.cust.m2) {
+              document.getElementById('row-mobile2').classList.remove('hidden');
+              document.getElementById('mobile2').value = cfg.cust.m2;
+            }
+            if (cfg.cust.m3) {
+              document.getElementById('row-mobile3').classList.remove('hidden');
+              document.getElementById('mobile3').value = cfg.cust.m3;
+              document.getElementById('mobile-add-row').classList.add('hidden');
+            }
+          }
+        })
+        .catch(err => console.log(err));
+    }
+
+    // --- مدیریت کاربران ---
+    let editingUser = null;
+
+    function loadUsersList() {
+      fetch('/api/users', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(list => {
+          const tbody = document.querySelector('#usersTable tbody');
+          const info  = document.getElementById('usersInfo');
+          tbody.innerHTML = '';
+          if (!list || list.length === 0) {
+            info.textContent = 'هیچ کاربری ثبت نشده است.';
+            return;
+          }
+          info.textContent = 'تعداد کاربران: ' + list.length;
+          list.forEach(u => {
+            const tr = document.createElement('tr');
+
+            const tdUser = document.createElement('td');
+            tdUser.style.padding = '4px 6px';
+            tdUser.textContent = u.username + (u.primary ? ' (ادمین اصلی)' : '');
+            tr.appendChild(tdUser);
+
+            const tdRole = document.createElement('td');
+            tdRole.style.padding = '4px 6px';
+            tdRole.textContent = (u.role === 'admin') ? 'ادمین' : 'بیننده';
+            tr.appendChild(tdRole);
+
+            const tdLast = document.createElement('td');
+            tdLast.style.padding = '4px 6px';
+            tdLast.textContent = u.lastLogin || '-';
+            tr.appendChild(tdLast);
+
+            const tdOps = document.createElement('td');
+            tdOps.style.padding = '4px 6px';
+
+            const btnEdit = document.createElement('button');
+            btnEdit.className = 'btn secondary small';
+            btnEdit.textContent = 'ویرایش';
+            btnEdit.onclick = function() { openEditUser(u); };
+            tdOps.appendChild(btnEdit);
+
+            if (!u.primary) {
+              const btnDel = document.createElement('button');
+              btnDel.className = 'btn danger small';
+              btnDel.textContent = 'حذف';
+              btnDel.style.marginRight = '4px';
+              btnDel.onclick = function() { deleteUser(u.username); };
+              tdOps.appendChild(btnDel);
+            }
+
+            tr.appendChild(tdOps);
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(err => {
+          console.log(err);
+          document.getElementById('usersInfo').textContent = 'خطا در خواندن لیست کاربران';
+        });
+    }
+
+    function openEditUser(u) {
+      editingUser = u.username;
+      document.getElementById('popup-title').textContent = 'ویرایش کاربر';
+      document.getElementById('popup-message').innerHTML =
+        '<div class="form-row"><label>نام کاربری:</label><input type="text" id="editUserName" value="' + u.username + '"></div>' +
+        '<div class="form-row"><label>رمز جدید (در صورت نیاز):</label><input type="password" id="editUserPass" placeholder="بدون تغییر"></div>' +
+        '<div class="form-row"><label>نقش:</label>' +
+        '<select id="editUserRole">' +
+        '<option value="viewer"' + (u.role === 'viewer' ? ' selected' : '') + '>بیننده</option>' +
+        '<option value="admin"'  + (u.role === 'admin'  ? ' selected' : '') + '>ادمین</option>' +
+        '</select></div>';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn primary small" onclick="submitEditUser()">ذخیره</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">انصراف</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function submitEditUser() {
+      if (!editingUser) { hidePopup(); return; }
+      const newUser = document.getElementById('editUserName').value.trim();
+      const newPass = document.getElementById('editUserPass').value;
+      const newRole = document.getElementById('editUserRole').value;
+
+      const data = new URLSearchParams();
+      data.append('oldUser', editingUser);
+      data.append('user', newUser);
+      data.append('pass', newPass);
+      data.append('role', newRole);
+
+      fetch('/api/updateUser', { method: 'POST', body: data, cache: 'no-store' })
+      .then(r => r.text())
+      .then(txt => {
+        if (txt.startsWith('ERROR:')) showSimplePopup('خطا', txt.substring(6));
+        else {
+          showSimplePopup('ویرایش کاربر', txt || 'کاربر ویرایش شد.');
+          loadUsersList();
+        }
+      })
+      .catch(err => {
+        console.log(err);
+        showSimplePopup('خطا', 'عدم دسترسی یا خطا در سرور');
+      });
+    }
+
+    function deleteUser(username) {
+      document.getElementById('popup-title').textContent = 'حذف کاربر';
+      document.getElementById('popup-message').textContent = 'آیا مطمئن هستید می‌خواهید کاربر "' + username + '" را حذف کنید؟';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn danger small" onclick="doDeleteUser(\'' + username + '\')">بله</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">خیر</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function doDeleteUser(username) {
+      const data = new URLSearchParams();
+      data.append('user', username);
+      fetch('/api/deleteUser', { method: 'POST', body: data, cache: 'no-store' })
+      .then(r => r.text())
+      .then(txt => {
+        hidePopup();
+        if (txt.startsWith('ERROR:')) showSimplePopup('خطا', txt.substring(6));
+        else {
+          showSimplePopup('حذف کاربر', txt || 'کاربر حذف شد.');
+          loadUsersList();
+        }
+      })
+      .catch(err => {
+        console.log(err);
+        showSimplePopup('خطا', 'عدم دسترسی یا خطا در سرور');
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      initThemeToggle('themeToggle');
+      updateClock();
+      setInterval(updateClock, 1000);
+
+      loadDeviceInfo();
+      loadInitialValues();
+      loadUsersList();
+    });
+  </script>
+</body>
+</html>
