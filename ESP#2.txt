@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 
+// ---- کامپایل‌تایم: ۱ = نمایش بایت‌های خام دریافتی (برای دیباگ) ----
+#define ESP2_DEBUG_BYTES 0
+
 // ---------- ESP1 Link (UART1) ----------
 #define ESP2_UART_RX 26   // ESP2 RX  <- ESP1 TX (GPIO26)
 #define ESP2_UART_TX 25   // ESP2 TX  -> ESP1 RX (GPIO25)
@@ -219,14 +222,17 @@ void setup() {
 
 void loop() {
   Esp2Link::Frame fr;
+
+#if ESP2_DEBUG_BYTES
+  // نمایش بایت‌های خام دریافتی – فقط در حالت دیباگ فعال است
   while (linkSerial.available()) {
-  int b = linkSerial.read();
-  Serial.print("RX byte: 0x");
-  if (b < 16) Serial.print("0");
-  Serial.println(b, HEX);
-}
-delay(10);
-return;
+    int b = linkSerial.read();
+    Serial.print("RX byte: 0x");
+    if (b < 16) Serial.print("0");
+    Serial.println(b, HEX);
+  }
+#endif
+
   while (espLink.poll(fr)) {
     // اگر ACK_REQ بود، حتماً ACK بدهیم (برای sendWithAck در ESP1)
     if (fr.flags & Esp2Link::FL_ACK_REQ) {

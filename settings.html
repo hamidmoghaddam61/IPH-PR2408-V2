@@ -265,6 +265,25 @@
           </div>
         </section>
 
+        <!-- کارت کنترل شارژر -->
+        <section class="card glass light">
+          <h3 class="card-title">فعال کردن کنترل شارژر</h3>
+          <div class="settings-form">
+            <div class="charger-toggle-row">
+              <span class="theme-label" id="charger-label-off">غیرفعال</span>
+              <label class="switch">
+                <input id="chargerToggle" type="checkbox">
+                <span class="slider"></span>
+              </label>
+              <span class="theme-label" id="charger-label-on">فعال</span>
+            </div>
+            <div id="charger-esp2-status" class="settings-text" style="margin-top:6px;font-size:11px;"></div>
+            <p class="charger-note">
+              بایستی اتصالات مربوط به کنترلر وصل شود تا دستگاه عملکرد صحیح داشته باشد.
+            </p>
+          </div>
+        </section>
+
         <section class="card glass light">
           <h3 class="card-title">مشخصات دستگاه</h3>
           <div class="settings-text">
@@ -673,6 +692,84 @@
       });
     }
 
+    // ---- مدیریت کنترل شارژر ----
+    function loadChargerStatus() {
+      fetch('/api/charger', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(data => {
+          const toggle = document.getElementById('chargerToggle');
+          if (toggle) toggle.checked = !!data.enabled;
+          const statusEl = document.getElementById('charger-esp2-status');
+          if (statusEl) {
+            statusEl.textContent = data.esp2_ok
+              ? '✅ کنترلر متصل است'
+              : '⚠️ کنترلر متصل نیست';
+            statusEl.style.color = data.esp2_ok ? '#22c55e' : '#f59e0b';
+          }
+        })
+        .catch(err => {
+          console.log('loadChargerStatus err:', err);
+        });
+    }
+
+    function setupChargerToggle() {
+      const toggle = document.getElementById('chargerToggle');
+      if (!toggle) return;
+      toggle.addEventListener('change', function() {
+        const enabled = toggle.checked;
+
+        // اگر می‌خواهند روشن کنند، ابتدا وضعیت ESP2 را بررسی کنیم
+        if (enabled) {
+          fetch('/api/charger', { cache: 'no-store' })
+            .then(r => r.json())
+            .then(data => {
+              if (!data.esp2_ok) {
+                // اتصال کنترلر برقرار نیست
+                toggle.checked = false;
+                showSimplePopup('خطا',
+                  'اتصال کنترلر برقرار نیست. لطفاً کابل‌های ارتباطی ESP2 را بررسی کنید.');
+                return;
+              }
+              sendChargerState(enabled);
+            })
+            .catch(() => {
+              toggle.checked = false;
+              showSimplePopup('خطا', 'خطا در خواندن وضعیت کنترلر');
+            });
+        } else {
+          sendChargerState(enabled);
+        }
+      });
+    }
+
+    function sendChargerState(enabled) {
+      const data = new URLSearchParams();
+      data.append('enabled', enabled ? '1' : '0');
+      fetch('/api/charger', {
+        method: 'POST',
+        body: data,
+        cache: 'no-store'
+      })
+      .then(r => r.text())
+      .then(txt => {
+        if (txt.startsWith('ERROR:')) {
+          showSimplePopup('خطا', txt.substring(6));
+          // بازگرداندن وضعیت toggle
+          const toggle = document.getElementById('chargerToggle');
+          if (toggle) toggle.checked = !enabled;
+        } else {
+          showSimplePopup('کنترل شارژر', txt || (enabled ? 'شارژر فعال شد' : 'شارژر غیرفعال شد'));
+          loadChargerStatus();
+        }
+      })
+      .catch(err => {
+        console.log(err);
+        showSimplePopup('خطا', 'خطا در ارتباط با سرور');
+        const toggle = document.getElementById('chargerToggle');
+        if (toggle) toggle.checked = !enabled;
+      });
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initThemeToggle('themeToggle');
       updateClock();
@@ -681,6 +778,8 @@
       loadDeviceInfo();
       loadInitialValues();
       loadUsersList();
+      loadChargerStatus();
+      setupChargerToggle();
     });
   </script>
 </body>

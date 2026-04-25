@@ -184,22 +184,22 @@
           <div class="status-text" id="statusText">در حال به‌روزرسانی...</div>
         </section>
 
-        <!-- ولتمترها -->
-        <section class="card glass light">
-          <h3 class="card-title">ولت‌مترها</h3>
-          <div class="gauge-grid" id="voltGrid"></div>
-        </section>
+        <!-- ولتاژ و جریان (کنار هم) -->
+        <div class="gauge-row-pair">
+          <section class="card glass light">
+            <h3 class="card-title">ولتاژها</h3>
+            <div class="gauge-pair-grid" id="voltGrid"></div>
+          </section>
+          <section class="card glass light">
+            <h3 class="card-title">جریان‌ها</h3>
+            <div class="gauge-pair-grid" id="ampGrid"></div>
+          </section>
+        </div>
 
-        <!-- آمپرمترها -->
-        <section class="card glass light">
-          <h3 class="card-title">آمپرمترها</h3>
-          <div class="gauge-grid amps" id="ampGrid"></div>
-        </section>
-
-        <!-- دما / رطوبت -->
-        <section class="card glass light">
+        <!-- دما و رطوبت (وسط) -->
+        <section class="card glass light gauge-env-card">
           <h3 class="card-title">دما و رطوبت</h3>
-          <div class="gauge-grid env" id="envGrid"></div>
+          <div class="gauge-pair-grid" id="envGrid"></div>
         </section>
       </main>
     </div>
@@ -468,14 +468,12 @@
       });
     }
 
-    // ---------------- Gauges (SVG) ----------------
+    // ---------------- Gauges (SVG – redesigned) ----------------
     function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-    // value -> angle on semicircle: -120..120 deg
     function valueToAngle(value, min, max) {
-      const t = (value - min) / (max - min);
-      const tt = clamp(t, 0, 1);
-      return -120 + tt * 240;
+      const t = clamp((value - min) / (max - min), 0, 1);
+      return -120 + t * 240;
     }
 
     function polarToXY(cx, cy, r, angDeg) {
@@ -488,189 +486,228 @@
       const p1 = polarToXY(cx, cy, r, a1);
       const large = (Math.abs(a1 - a0) > 180) ? 1 : 0;
       const sweep = (a1 > a0) ? 1 : 0;
-      return `M ${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`;
+      return 'M ' + p0.x.toFixed(2) + ' ' + p0.y.toFixed(2) +
+             ' A ' + r + ' ' + r + ' 0 ' + large + ' ' + sweep +
+             ' ' + p1.x.toFixed(2) + ' ' + p1.y.toFixed(2);
     }
 
+    /**
+     * gaugeTile – SVG gauge with multi-zone coloring and graduated ticks
+     * cfg: {
+     *   min, max,
+     *   zones: [{from, to, color}],
+     *   labelStep: interval for labeled ticks (e.g. 50),
+     *   minorStep: interval for short unlabeled ticks (e.g. 10),
+     *   dp: decimal places
+     * }
+     */
     function gaugeTile(title, unit, cfg) {
+      // SVG geometry constants
+      const VW = 200, VH = 158;
+      const cx = 100, cy = 100, r = 78;
+      const trackW = 12;
+      const minorTickInner = r + 6,  minorTickOuter = r + 10;
+      const majorTickInner = r + 4,  majorTickOuter = r + 13;
+      const labelR = r + 20;
+
       const tile = document.createElement('div');
       tile.className = 'gauge-tile';
 
-      const t = document.createElement('div');
-      t.className = 'gauge-title';
-      t.textContent = title;
-      tile.appendChild(t);
+      const titleEl = document.createElement('div');
+      titleEl.className = 'gauge-title';
+      titleEl.textContent = title;
+      tile.appendChild(titleEl);
 
       const wrap = document.createElement('div');
       wrap.className = 'gauge-wrap';
       tile.appendChild(wrap);
 
-      // SVG gauge
-      const svgNS = "http://www.w3.org/2000/svg";
+      const svgNS = 'http://www.w3.org/2000/svg';
       const svg = document.createElementNS(svgNS, 'svg');
-      svg.setAttribute('viewBox', '0 0 240 150');
+      svg.setAttribute('viewBox', '0 0 ' + VW + ' ' + VH);
       svg.classList.add('gauge-svg');
-
-      const cx = 120, cy = 130, r = 95;
-
-      // Track
-      const track = document.createElementNS(svgNS, 'path');
-      track.setAttribute('d', arcPath(cx, cy, r, -120, 120));
-      track.setAttribute('fill', 'none');
-      track.setAttribute('stroke-width', '16');
-      track.setAttribute('class', 'gauge-track');
-      svg.appendChild(track);
-
-      // Zones (ok/warn/bad)
-      // zones are defined in cfg as fractions or value ranges
-      function addZone(a0, a1, cls) {
-        const p = document.createElementNS(svgNS, 'path');
-        p.setAttribute('d', arcPath(cx, cy, r, a0, a1));
-        p.setAttribute('fill', 'none');
-        p.setAttribute('stroke-width', '16');
-        p.setAttribute('stroke-linecap', 'round');
-        p.setAttribute('class', cls);
-        svg.appendChild(p);
-      }
-
-      // Background tick marks (simple)
-      for (let k = 0; k <= 12; k++) {
-        const a = -120 + k * 20;
-        const p0 = polarToXY(cx, cy, r - 20, a);
-        const p1 = polarToXY(cx, cy, r - 8, a);
-        const tick = document.createElementNS(svgNS, 'line');
-        tick.setAttribute('x1', p0.x); tick.setAttribute('y1', p0.y);
-        tick.setAttribute('x2', p1.x); tick.setAttribute('y2', p1.y);
-        tick.setAttribute('stroke', 'rgba(255,255,255,0.25)');
-        tick.setAttribute('stroke-width', '2');
-        svg.appendChild(tick);
-      }
-
-      // Zones based on cfg.thresholds
-      // cfg: {min,max, okMin, okMax}
-      const aMin = -120, aMax = 120;
-      const aOk0 = valueToAngle(cfg.okMin, cfg.min, cfg.max);
-      const aOk1 = valueToAngle(cfg.okMax, cfg.min, cfg.max);
-
-      // warn low: min..okMin
-      if (cfg.okMin > cfg.min) addZone(aMin, aOk0, 'gauge-zone-warn');
-      // ok: okMin..okMax
-      addZone(aOk0, aOk1, 'gauge-zone-ok');
-      // bad high: okMax..max
-      if (cfg.okMax < cfg.max) addZone(aOk1, aMax, 'gauge-zone-bad');
-
-      // Needle group
-      const needle = document.createElementNS(svgNS, 'line');
-      needle.setAttribute('x1', cx);
-      needle.setAttribute('y1', cy);
-      needle.setAttribute('x2', cx);
-      needle.setAttribute('y2', cy - 70);
-      needle.setAttribute('stroke-width', '4');
-      needle.setAttribute('stroke-linecap', 'round');
-      needle.setAttribute('class', 'gauge-needle');
-      svg.appendChild(needle);
-
-      const hub = document.createElementNS(svgNS, 'circle');
-      hub.setAttribute('cx', cx);
-      hub.setAttribute('cy', cy);
-      hub.setAttribute('r', 7);
-      hub.setAttribute('fill', 'rgba(0,0,0,0.35)');
-      svg.appendChild(hub);
-
-      const txt = document.createElementNS(svgNS, 'text');
-      txt.setAttribute('x', cx);
-      txt.setAttribute('y', 90);
-      txt.setAttribute('text-anchor', 'middle');
-      txt.setAttribute('class', 'gauge-text');
-      txt.textContent = '--';
-      svg.appendChild(txt);
-
       wrap.appendChild(svg);
 
-      const sub = document.createElement('div');
-      sub.className = 'gauge-sub';
-      sub.textContent = `بازه: ${cfg.min} تا ${cfg.max} ${unit}`;
-      tile.appendChild(sub);
+      function mkEl(tag, attrs) {
+        const el = document.createElementNS(svgNS, tag);
+        for (const k in attrs) el.setAttribute(k, attrs[k]);
+        return el;
+      }
 
-      // updater
+      // Track (grey background arc)
+      svg.appendChild(mkEl('path', {
+        d: arcPath(cx, cy, r, -120, 120),
+        fill: 'none', 'stroke-width': trackW, class: 'gauge-track'
+      }));
+
+      // Color zones
+      (cfg.zones || []).forEach(function(z) {
+        var a0 = valueToAngle(z.from, cfg.min, cfg.max);
+        var a1 = valueToAngle(z.to,   cfg.min, cfg.max);
+        svg.appendChild(mkEl('path', {
+          d: arcPath(cx, cy, r, a0, a1),
+          fill: 'none', 'stroke-width': trackW,
+          'stroke-linecap': 'butt', stroke: z.color
+        }));
+      });
+
+      // Minor ticks (no label)
+      if (cfg.minorStep) {
+        for (var v = cfg.min; v <= cfg.max; v += cfg.minorStep) {
+          // skip if also a major tick (will be drawn separately)
+          if (cfg.labelStep && (Math.round(v - cfg.min) % Math.round(cfg.labelStep) === 0)) continue;
+          var ang = valueToAngle(v, cfg.min, cfg.max);
+          var p0  = polarToXY(cx, cy, minorTickInner, ang);
+          var p1  = polarToXY(cx, cy, minorTickOuter, ang);
+          svg.appendChild(mkEl('line', {
+            x1: p0.x.toFixed(2), y1: p0.y.toFixed(2),
+            x2: p1.x.toFixed(2), y2: p1.y.toFixed(2),
+            class: 'gauge-tick', 'stroke-width': '1.5'
+          }));
+        }
+      }
+
+      // Major ticks + labels
+      if (cfg.labelStep) {
+        for (var v = cfg.min; v <= cfg.max + 0.001; v += cfg.labelStep) {
+          var vr = Math.round(v * 100) / 100; // avoid float drift
+          var ang = valueToAngle(vr, cfg.min, cfg.max);
+          var p0  = polarToXY(cx, cy, majorTickInner, ang);
+          var p1  = polarToXY(cx, cy, majorTickOuter, ang);
+          svg.appendChild(mkEl('line', {
+            x1: p0.x.toFixed(2), y1: p0.y.toFixed(2),
+            x2: p1.x.toFixed(2), y2: p1.y.toFixed(2),
+            class: 'gauge-tick-major', 'stroke-width': '2'
+          }));
+          var lp = polarToXY(cx, cy, labelR, ang);
+          var lbl = document.createElementNS(svgNS, 'text');
+          lbl.setAttribute('x', lp.x.toFixed(2));
+          lbl.setAttribute('y', lp.y.toFixed(2));
+          lbl.setAttribute('text-anchor', 'middle');
+          lbl.setAttribute('dominant-baseline', 'central');
+          lbl.setAttribute('class', 'gauge-tick-label');
+          lbl.textContent = vr % 1 === 0 ? Math.round(vr) : vr;
+          svg.appendChild(lbl);
+        }
+      }
+
+      // Needle
+      const needle = mkEl('line', {
+        x1: cx, y1: cy, x2: cx, y2: cy - 60,
+        'stroke-width': '3', 'stroke-linecap': 'round', class: 'gauge-needle'
+      });
+      svg.appendChild(needle);
+
+      // Hub
+      svg.appendChild(mkEl('circle', {
+        cx: cx, cy: cy, r: '6', fill: 'rgba(0,0,0,0.40)'
+      }));
+
+      // Numeric value box below SVG
+      const numBox = document.createElement('div');
+      numBox.className = 'gauge-numbox';
+      numBox.textContent = '-- ' + unit;
+      tile.appendChild(numBox);
+
+      // Value updater
       tile._setValue = function(v) {
         const ang = valueToAngle(v, cfg.min, cfg.max);
-        needle.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
-        txt.textContent = `${v.toFixed(cfg.dp ?? 1)} ${unit}`;
+        needle.setAttribute('transform', 'rotate(' + ang + ' ' + cx + ' ' + cy + ')');
+        numBox.textContent = v.toFixed(cfg.dp !== undefined ? cfg.dp : 1) + ' ' + unit;
       };
 
       return tile;
     }
 
-    // Create all gauge tiles once
+    // Zone definitions
+    var AC_VOLT_ZONES = [
+      { from: 0,   to: 190, color: '#f59e0b' },  // نارنجی
+      { from: 190, to: 230, color: '#22c55e' },  // سبز
+      { from: 230, to: 260, color: '#ef4444' }   // قرمز
+    ];
+    var DC_VOLT_ZONES = [
+      { from: 0,  to: 20, color: '#f59e0b' },    // نارنجی
+      { from: 20, to: 28, color: '#22c55e' },    // سبز
+      { from: 28, to: 60, color: '#ef4444' }     // قرمز
+    ];
+    var CURRENT_ZONES = [
+      { from: 0,  to: 10, color: '#22c55e' },    // سبز
+      { from: 10, to: 20, color: '#eab308' },    // زرد
+      { from: 20, to: 30, color: '#f59e0b' },    // نارنجی
+      { from: 30, to: 40, color: '#f87171' },    // قرمز روشن
+      { from: 40, to: 50, color: '#ef4444' }     // قرمز تیره
+    ];
+    var TEMP_ZONES = [
+      { from: -20, to: 0,  color: '#93c5fd' },   // آبی روشن
+      { from: 0,   to: 10, color: '#3b82f6' },   // آبی
+      { from: 10,  to: 20, color: '#22c55e' },   // سبز
+      { from: 20,  to: 30, color: '#eab308' },   // زرد
+      { from: 30,  to: 40, color: '#f59e0b' },   // نارنجی
+      { from: 40,  to: 60, color: '#ef4444' }    // قرمز
+    ];
+    var HUM_ZONES = [
+      { from: 0,  to: 20,  color: '#22c55e' },   // سبز
+      { from: 20, to: 40,  color: '#f59e0b' },   // نارنجی
+      { from: 40, to: 60,  color: '#ef4444' },   // قرمز
+      { from: 60, to: 100, color: '#92400e' }    // قهوه‌ای
+    ];
+
     function buildGauges() {
       const voltGrid = document.getElementById('voltGrid');
-      const ampGrid = document.getElementById('ampGrid');
-      const envGrid = document.getElementById('envGrid');
+      const ampGrid  = document.getElementById('ampGrid');
+      const envGrid  = document.getElementById('envGrid');
 
-      // Voltmeters
-      const vMains = gaugeTile('ولتاژ برق شهری', 'V', { min: 0, max: 260, okMin: 200, okMax: 230, dp: 0 });
-      const vGen   = gaugeTile('ولتاژ ژنراتور', 'V',   { min: 0, max: 260, okMin: 200, okMax: 230, dp: 0 });
-      const vDC    = gaugeTile('ولتاژ DC', 'V',        { min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
-      const vBatt  = gaugeTile('ولتاژ باتری', 'V',     { min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
-      const vSolar = gaugeTile('ولتاژ پنل خورشیدی', 'V',{ min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
-      
-      
-
+      // ولتاژ برق شهری (AC mains): 0..260V
+      const vMains = gaugeTile('ولتاژ برق شهری', 'V', {
+        min: 0, max: 260, zones: AC_VOLT_ZONES,
+        labelStep: 50, minorStep: 10, dp: 0
+      });
+      // ولتاژ DC: 0..60V
+      const vDC = gaugeTile('ولتاژ DC', 'V', {
+        min: 0, max: 60, zones: DC_VOLT_ZONES,
+        labelStep: 10, minorStep: 5, dp: 1
+      });
       voltGrid.appendChild(vMains);
-      voltGrid.appendChild(vBatt);
-      voltGrid.appendChild(vSolar);
-      voltGrid.appendChild(vGen);
       voltGrid.appendChild(vDC);
 
-// Ammeters (range depends on your design; placeholder 0..30A)
-const aMains = gaugeTile('جریان برق شهری', 'A',   { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
-const aGen   = gaugeTile('جریان ژنراتور', 'A',    { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
-const aDC    = gaugeTile('جریان DC', 'A',         { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
-const aBatt  = gaugeTile('جریان باتری', 'A',      { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
-const aSolar = gaugeTile('جریان پنل خورشیدی', 'A',        { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+      // جریان برق شهری (AC mains): 0..50A
+      const aMains = gaugeTile('جریان برق شهری', 'A', {
+        min: 0, max: 50, zones: CURRENT_ZONES,
+        labelStep: 10, minorStep: 5, dp: 1
+      });
+      // جریان DC: 0..50A
+      const aDC = gaugeTile('جریان DC', 'A', {
+        min: 0, max: 50, zones: CURRENT_ZONES,
+        labelStep: 10, minorStep: 5, dp: 1
+      });
+      ampGrid.appendChild(aMains);
+      ampGrid.appendChild(aDC);
 
-
-
-
-ampGrid.appendChild(aBatt);
-ampGrid.appendChild(aSolar);
-ampGrid.appendChild(aGen);
-ampGrid.appendChild(aMains);
-ampGrid.appendChild(aDC);
-
-      // Env
-      const tBatt = gaugeTile('دمای باتری', '°C', { min: -10, max: 70, okMin: 0, okMax: 45, dp: 0 });
-      const tAmb  = gaugeTile('دمای محیط', '°C', { min: -10, max: 70, okMin: 0, okMax: 40, dp: 0 });
-      const hum   = gaugeTile('رطوبت محیط', '%',  { min: 0, max: 100, okMin: 20, okMax: 60, dp: 0 });
-
-      envGrid.appendChild(tBatt);
-      envGrid.appendChild(tAmb);
+      // دما: -20..60°C
+      const temp = gaugeTile('دما', '°C', {
+        min: -20, max: 60, zones: TEMP_ZONES,
+        labelStep: 20, minorStep: 10, dp: 0
+      });
+      // رطوبت: 0..100%
+      const hum = gaugeTile('رطوبت', '%', {
+        min: 0, max: 100, zones: HUM_ZONES,
+        labelStep: 20, minorStep: 10, dp: 0
+      });
+      envGrid.appendChild(temp);
       envGrid.appendChild(hum);
 
-      // Save references globally for updates
-      window.__gauges = { vMains, vBatt, vSolar, vGen, vDC, aBatt, aSolar, aGen, aMains, aDC, tBatt, tAmb, hum };
+      window.__gauges = { vMains, vDC, aMains, aDC, temp, hum };
     }
 
-    // For now: demo values. Later: replace with fetch('/api/power')
+    // برای مرحله اول: مقادیر نمونه (بعداً با fetch('/api/power') جایگزین می‌شود)
     function updateGaugeDemo() {
       const g = window.__gauges;
       if (!g) return;
-
-      // نمونه‌ها (می‌تونی تغییر بدی)
       g.vMains._setValue(218);
-      g.vBatt._setValue(25.6);
-      g.vSolar._setValue(27.1);
-      g.vGen._setValue(0);
       g.vDC._setValue(24.2);
-
-      g.aBatt._setValue(6.4);
-      g.aSolar._setValue(3.1);
-      g.aGen._setValue(0.0);
       g.aMains._setValue(1.8);
       g.aDC._setValue(4.2);
-
-      g.tBatt._setValue(32);
-      g.tAmb._setValue(28);
+      g.temp._setValue(28);
       g.hum._setValue(41);
     }
 

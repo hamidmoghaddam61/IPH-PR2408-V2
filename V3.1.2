@@ -16,6 +16,9 @@
 #define ESP2_UART_TX 26
 #define ESP2_RS485_DE_RE 33
 
+// ---------- کنترل شارژر DC ----------
+#define RL_DC2OUT 32   // خروجی دیجیتال کنترل شارژر (HIGH=فعال)
+
 extern HardwareSerial esp2Serial;  // فقط همین
 void esp2InitLink();               // اعلان تابع init
 
@@ -76,6 +79,16 @@ String defaultPass = "admin";
 
 bool isLoggedIn = false;
 String currentUser = "";
+
+// ---------- Charger control + ESP2 connectivity ----------
+bool chargerEnabled  = false;           // وضعیت فعال/غیرفعال شارژر (persistent)
+unsigned long lastPongMs     = 0;       // آخرین بار PONG یا TELEM_RSP دریافت شد
+unsigned long lastEsp2PingMs = 0;       // آخرین بار PING ارسال شد
+
+bool getEsp2Ok() {
+  // esp2_ok: اگر در 5 ثانیه اخیر PONG/TELEM_RSP دریافت شده
+  return (millis() - lastPongMs) < 5000UL;
+}
 
 // ---------- تنظیمات شبکه / NTP / مشتری ----------
 struct NetConfig {
@@ -257,6 +270,26 @@ void saveCustomerConfig(const CustomerConfig &c) {
   preferences.putString("m2",      c.mobile2);
   preferences.putString("m3",      c.mobile3);
   preferences.end();
+}
+
+// ---------------------------------------------------------------------
+// Charger: load / save / apply GPIO
+// ---------------------------------------------------------------------
+void loadChargerConfig() {
+  preferences.begin("power", true);
+  chargerEnabled = preferences.getBool("chg_en", false);
+  preferences.end();
+}
+
+void saveChargerConfig() {
+  preferences.begin("power", false);
+  preferences.putBool("chg_en", chargerEnabled);
+  preferences.end();
+}
+
+// اعمال وضعیت GPIO32 بر اساس chargerEnabled
+void applyChargerGpio() {
+  digitalWrite(RL_DC2OUT, chargerEnabled ? HIGH : LOW);
 }
 
 // ---------------------------------------------------------------------
@@ -1393,6 +1426,7 @@ void handleFactoryReset(Stream &client, const String &body) {
   preferences.begin("cust", false); preferences.clear(); preferences.end();
   preferences.begin("relays", false);preferences.clear(); preferences.end();
   preferences.begin("users", false); preferences.clear(); preferences.end();
+  preferences.begin("power", false); preferences.clear(); preferences.end();  // شارژر
 
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: text/plain; charset=utf-8");
@@ -2199,6 +2233,10 @@ else if (firstLine.startsWith("GET /favicon.ico")) {
     handleDeviceInfo(client);
   else if (firstLine.startsWith("GET /api/settings"))
     handleSettingsApi(client);
+    else if (firstLine.startsWith("GET /api/charger"))
+    handleChargerGet(client);
+  else if (firstLine.startsWith("POST /api/charger"))
+    handleChargerPost(client, body);
     else if (firstLine.startsWith("GET /api/esp2ping"))
     handleEsp2PingApi(client);
   else if (firstLine.startsWith("GET /api/esp2telem"))
@@ -2471,6 +2509,11 @@ void setup() {
   Serial.println("\nBooting...");
 
   pinMode(W5500_RST, OUTPUT);
+
+  // کنترل شارژر DC
+  pinMode(RL_DC2OUT, OUTPUT);
+  loadChargerConfig();
+  applyChargerGpio();
 
   digitalWrite(W5500_RST, LOW);
   delay(200);
@@ -2760,6 +2803,72 @@ Esp2Link::Link esp2Link(esp2Serial); // definition (initializer ok here)
 void esp2InitLink() {
   esp2Link.begin();
 }
+
+// ---------------- Charger APIs ----------------
+void handleChargerGet(Stream &client) {
+  if (!isLoggedIn) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.println("ERROR:Forbidden");
+    return;
+  }
+
+  bool ok = getEsp2Ok();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json; charset=utf-8");
+  client.println("Cache-Control: no-store");
+  client.println("Connection: close");
+  client.println();
+  client.print("{\"enabled\":");
+  client.print(chargerEnabled ? "true" : "false");
+  client.print(",\"esp2_ok\":");
+  client.print(ok ? "true" : "false");
+  client.println("}");
+}
+
+void handleChargerPost(Stream &client, const String &body) {
+  if (!isAdmin()) {
+    client.println("HTTP/1.1 403 Forbidden");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:دسترسی فقط برای ادمین مجاز است.");
+    return;
+  }
+
+  String val = getField(body, "enabled");
+  bool newState;
+
+  if (val == "1" || val == "on" || val == "true") {
+    newState = true;
+  } else if (val == "0" || val == "off" || val == "false") {
+    newState = false;
+  } else {
+    client.println("HTTP/1.1 400 Bad Request");
+    client.println("Content-Type: text/plain; charset=utf-8");
+    client.println("Connection: close");
+    client.println();
+    client.print("ERROR:مقدار enabled نامعتبر است. باید 1|0|on|off باشد.");
+    return;
+  }
+
+  chargerEnabled = newState;
+  saveChargerConfig();
+  applyChargerGpio();
+
+  Serial.print("[Charger] enabled=");
+  Serial.println(chargerEnabled ? "true" : "false");
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain; charset=utf-8");
+  client.println("Connection: close");
+  client.println();
+  client.print(chargerEnabled ? "OK:شارژر فعال شد." : "OK:شارژر غیرفعال شد.");
+}
+
 // ---------------- ESP2 Test APIs ----------------
 void handleEsp2PingApi(Stream &client) {
   if (!isLoggedIn) {
@@ -2868,13 +2977,19 @@ if (millis() - lastLinkCheck > 5000) {
     }
   }
   {
+  // ارسال دوره‌ای PING به ESP2 (هر 3 ثانیه) برای پایش اتصال
+  if (now - lastEsp2PingMs > 3000UL) {
+    lastEsp2PingMs = now;
+    esp2Link.send(Esp2Link::MSG_PING, nullptr, 0);
+  }
+
   Esp2Link::Frame fr;
   while (esp2Link.poll(fr)) {
-    // اگر ESP2 درخواستی بفرستد که ACK_REQ دارد، لینک خودکار ACK می‌دهد (داخل sendWithAck هم ack می‌زنیم)
-    // اینجا فقط برای debug چند مورد را لاگ می‌کنیم:
     if (fr.type == Esp2Link::MSG_PONG) {
+      lastPongMs = millis();   // ثبت زمان دریافت PONG
       Serial.println("[ESP2] PONG received");
     } else if (fr.type == Esp2Link::MSG_TELEM_RSP) {
+      lastPongMs = millis();   // TELEM_RSP هم به عنوان نشانه اتصال حساب می‌شود
       Serial.print("[ESP2] TELEM_RSP len=");
       Serial.println(fr.len);
     }
