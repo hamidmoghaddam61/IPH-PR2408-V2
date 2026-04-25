@@ -1,0 +1,864 @@
+/* BUILD: 2026-04-19 theme-test-01 */
+/* پایه عمومی */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  direction: rtl;
+  font-family: Tahoma, sans-serif;
+}
+
+/* ===== Theme variables (Dark/Light) ===== */
+:root {
+  --bg: radial-gradient(circle at top, #283048 0%, #1f1c2c 40%, #000000 100%);
+  --text: #f5f5ff;
+  --panel: rgba(20, 24, 48, 0.7);
+  --panel-2: rgba(15,15,40,0.7);
+  --border: rgba(255,255,255,0.08);
+  --input-bg: rgba(10,10,30,0.8);
+  --shadow: rgba(0,0,0,0.6);
+  --accent1: #00d2ff;
+  --accent2: #3a7bd5;
+  --accent3: #8e2de2;
+  --accent4: #4a00e0;
+}
+
+/* Light theme */
+html[data-theme="light"] {
+  --bg: radial-gradient(circle at top, #eef2ff 0%, #dbeafe 40%, #ffffff 100%);
+  --text: #111827;
+  --panel: rgba(255,255,255,0.75);
+  --panel-2: rgba(255,255,255,0.65);
+  --border: rgba(0,0,0,0.10);
+  --input-bg: rgba(255,255,255,0.85);
+  --shadow: rgba(0,0,0,0.20);
+}
+
+/* Apply variables */
+.dash-body {
+  background: var(--bg);
+  color: var(--text);
+}
+.card.glass {
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.side-item {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.form-row input,
+.form-row select {
+  background: var(--input-bg);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: var(--text);
+}
+
+/* Fix "two-tone" long-page background: ensure body owns background and containers are transparent */
+.dashboard-shell,
+.layout,
+.dash-main,
+.settings-main {
+  background: transparent;
+}
+
+body {
+  background: #000;
+}
+
+/* پس‌زمینه گرادیانی لاگین */
+
+.fancy-bg {
+  background: radial-gradient(circle at top, #ff4b5c 0%, #1f1c2c 40%, #0f2027 100%);
+}
+
+/* لاگین */
+
+.login-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+
+.login-card {
+  width: 260px;
+  padding: 22px 20px 26px 20px;
+  border-radius: 22px;
+  background: rgba(15, 14, 40, 0.7);
+  box-shadow: 0 22px 45px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #ffffff;
+  text-align: center;
+}
+
+.login-card.glass.dark {
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+.login-avatar.big {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  margin: 0 auto 12px auto;
+  background: radial-gradient(circle at top, rgba(255,255,255,0.9), rgba(255,255,255,0.05));
+}
+
+.login-title {
+  margin: 4px 0 14px 0;
+  font-size: 16px;
+}
+
+.login-form {
+  text-align: left;
+  direction: ltr;
+}
+
+.input-group {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.input-icon {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  opacity: 0.8;
+  color: #ffffff;
+}
+
+.input-group input {
+  width: 100%;
+  padding: 7px 7px 7px 24px;
+  border: none;
+  border-bottom: 1px solid rgba(255,255,255,0.4);
+  background: transparent;
+  color: #ffffff;
+  outline: none;
+  font-size: 12px;
+}
+
+.input-group input::placeholder {
+  color: rgba(255,255,255,0.7);
+}
+
+.login-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 10px;
+}
+
+.remember-me input {
+  margin-right: 3px;
+}
+
+.login-button {
+  width: 100%;
+  padding: 7px 0;
+  border: none;
+  border-radius: 18px;
+  cursor: pointer;
+  color: #ffffff;
+  font-weight: bold;
+  letter-spacing: 1px;
+  font-size: 12px;
+  background: linear-gradient(90deg, #8e2de2, #4a00e0);
+}
+
+.login-button:hover {
+  opacity: 0.9;
+}
+
+/* Popup مشترک */
+
+.popup {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.popup.hidden {
+  display: none;
+}
+
+.popup-content {
+  background: rgba(15,15,40,0.9);
+  border-radius: 14px;
+  padding: 14px 16px;
+  min-width: 220px;
+  max-width: 280px;
+  box-shadow: 0 0 18px rgba(0,0,0,0.6);
+  text-align: center;
+  color: #ffffff;
+}
+
+.popup-title {
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.popup-message {
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+/* Tooltip */
+
+.tooltip {
+  position: fixed;
+  background: rgba(0,0,0,0.8);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 999;
+}
+.tooltip.hidden {
+  display: none;
+}
+
+/* داشبورد / تنظیمات */
+
+.dash-body {
+  background: radial-gradient(circle at top, #283048 0%, #1f1c2c 40%, #000000 100%);
+  color: #f5f5ff;
+}
+
+.dashboard-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 8px 10px 16px 10px;
+  box-sizing: border-box;
+}
+
+/* نوار بالا */
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #00d2ff, #3a7bd5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.app-name {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.clock-text {
+  font-size: 12px;
+}
+
+/* Layout */
+
+.layout {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: 10px;
+}
+
+/* سایدبار */
+
+.side-menu {
+  width: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.side-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 4px;
+  border-radius: 14px;
+  text-decoration: none;
+  color: #d0d8ff;
+  background: rgba(15,15,40,0.7);
+  border: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px;
+}
+
+.side-item .side-icon {
+  font-size: 18px;
+  margin-bottom: 2px;
+}
+
+.side-item.active {
+  background: linear-gradient(145deg, #00d2ff, #3a7bd5);
+  color: #ffffff;
+}
+
+.side-item:hover {
+  box-shadow: 0 0 10px rgba(0,255,255,0.4);
+}
+
+.side-text {
+  white-space: nowrap;
+}
+
+/* محتوای داشبورد */
+
+.dash-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* کارت‌ها */
+
+.card {
+  width: 100%;
+  border-radius: 18px;
+  padding: 10px 14px 14px 14px;
+  box-sizing: border-box;
+}
+
+.card.glass {
+  background: rgba(20, 24, 48, 0.7);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.card.glass.neon {
+  box-shadow: 0 0 18px rgba(0, 255, 255, 0.25);
+}
+
+.card.glass.light {
+  box-shadow: 0 0 14px rgba(0, 200, 120, 0.20);
+}
+
+.card-title {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+}
+
+/* پورت‌ها */
+
+.ports-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.port-icon-wrap {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.port-icon-wrap img {
+  width: 100%;
+  height: 100%;
+}
+
+.port-label {
+  position: absolute;
+  bottom: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: #e0e0ff;
+}
+
+/* رله‌ها */
+
+.power-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.power-icon-wrap {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+}
+
+.power-icon-wrap img {
+  width: 100%;
+  height: 100%;
+}
+
+.power-label {
+  position: absolute;
+  bottom: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #e0e0ff;
+}
+
+/* وضعیت */
+
+.status-card {
+  text-align: center;
+  box-shadow: 0 0 14px rgba(0, 170, 255, 0.25);
+}
+
+.status-label {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.status-text {
+  font-family: monospace;
+  font-size: 12px;
+  direction: ltr;
+  text-align: center;
+}
+
+/* Settings */
+
+.settings-main {
+  flex: 1;
+}
+
+/* موزاییکی */
+
+.settings-main.mosaic {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.card.small-tile {
+  padding: 8px 10px 10px 10px;
+}
+
+.settings-form {
+  margin-top: 6px;
+  margin-bottom: 10px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 6px;
+}
+
+.settings-subtitle {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  color: #e0e0ff;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.form-row label {
+  margin-bottom: 2px;
+}
+
+.form-row input,
+.form-row select {
+  padding: 5px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(10,10,30,0.8);
+  color: #f5f5ff;
+  font-size: 12px;
+  outline: none;
+}
+
+.form-row input[type="file"] {
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+}
+
+.radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.ip-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+
+.textarea-mono {
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(10,10,30,0.8);
+  color: #f5f5ff;
+  font-size: 11px;
+  font-family: Tahoma, sans-serif;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.settings-text {
+  font-size: 12px;
+  margin: 4px 0 6px 0;
+}
+
+/* Buttons */
+
+.btn {
+  padding: 6px 14px;
+  border-radius: 16px;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn.small {
+  font-size: 11px;
+  padding: 5px 12px;
+}
+
+.btn.primary {
+  background: linear-gradient(145deg, #00d2ff, #3a7bd5);
+  color: #ffffff;
+}
+
+.btn.secondary {
+  background: linear-gradient(145deg, #8e2de2, #4a00e0);
+  color: #ffffff;
+}
+
+.btn:hover {
+  opacity: 0.9;
+}
+
+/* ریسپانسیو */
+
+@media (max-width: 768px) {
+  .layout {
+    flex-direction: column-reverse;
+  }
+
+  .side-menu {
+    width: 100%;
+    flex-direction: row-reverse;
+    justify-content: center;
+  }
+
+  .side-item {
+    flex: 1;
+    max-width: 110px;
+  }
+
+  .settings-main.mosaic {
+    grid-template-columns: 1fr;
+  }
+
+  .ip-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===== Theme toggle switch ===== */
+.login-theme-row{
+  margin-top: 10px;
+  display: flex;
+  justify-content: center;
+}
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.theme-label {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  display: inline-block;
+}
+
+.switch input {
+  display: none;
+}
+
+.slider {
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.25);
+  border: 1px solid rgba(255,255,255,0.20);
+  border-radius: 999px;
+  transition: 0.2s;
+}
+
+.slider:before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: linear-gradient(145deg, var(--accent1), var(--accent2));
+  border-radius: 50%;
+  transition: 0.2s;
+}
+
+.switch input:checked + .slider:before {
+  left: 22px;
+}
+
+html[data-theme="light"] .slider {
+  background: rgba(0,0,0,0.10);
+  border-color: rgba(0,0,0,0.10);
+}
+
+/* ===== Force Light Theme overrides (append at END of file) ===== */
+html[data-theme="light"] body.dash-body {
+  background: radial-gradient(circle at top, #eef2ff 0%, #dbeafe 40%, #ffffff 100%) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] .card.glass {
+  background: rgba(255,255,255,0.80) !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+}
+
+html[data-theme="light"] .side-item {
+  background: rgba(255,255,255,0.75) !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  color: #111827 !important;
+}
+
+html[data-theme="light"] .side-item.active {
+  color: #ffffff !important;
+}
+
+html[data-theme="light"] .form-row input,
+html[data-theme="light"] .form-row select,
+html[data-theme="light"] textarea,
+html[data-theme="light"] .log-area {
+  background: rgba(255,255,255,0.90) !important;
+  color: #111827 !important;
+  border-color: rgba(0,0,0,0.18) !important;
+}
+
+html[data-theme="light"] .settings-text,
+html[data-theme="light"] .settings-subtitle,
+html[data-theme="light"] .card-title,
+html[data-theme="light"] .app-name,
+html[data-theme="light"] .clock-text,
+html[data-theme="light"] .theme-label {
+  color: #111827 !important;
+}
+
+/* Optional: make popup readable in light mode */
+html[data-theme="light"] .popup-content {
+  background: rgba(255,255,255,0.95) !important;
+  color: #111827 !important;
+}
+
+/* ===== Light mode: fix active sidebar item readability ===== */
+html[data-theme="light"] .side-item.active {
+  background: rgba(0, 210, 255, 0.18) !important;   /* آبی خیلی ملایم */
+  border: 1px solid rgba(0, 120, 200, 0.28) !important;
+  color: #0b1220 !important;                        /* متن تیره */
+  box-shadow: 0 6px 18px rgba(0, 120, 200, 0.18) !important;
+}
+
+html[data-theme="light"] .side-item.active .side-icon,
+html[data-theme="light"] .side-item.active .side-text {
+  color: #0b1220 !important;
+}
+
+/* ===== Light mode: Login page ===== */
+html[data-theme="light"] body.fancy-bg {
+  background: radial-gradient(circle at top, #eef2ff 0%, #dbeafe 40%, #ffffff 100%) !important;
+}
+
+html[data-theme="light"] .login-card {
+  background: rgba(255,255,255,0.82) !important;
+  color: #111827 !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  box-shadow: 0 18px 40px rgba(0,0,0,0.18) !important;
+}
+
+html[data-theme="light"] .input-group input {
+  color: #111827 !important;
+  border-bottom: 1px solid rgba(0,0,0,0.25) !important;
+}
+
+html[data-theme="light"] .input-icon {
+  color: rgba(0,0,0,0.70) !important;
+}
+
+html[data-theme="light"] .input-group input::placeholder {
+  color: rgba(0,0,0,0.55) !important;
+}
+
+html[data-theme="light"] .login-footer-row {
+  color: #111827 !important;
+}
+
+html[data-theme="light"] .forgot-link {
+  color: #1d4ed8 !important;
+}
+
+.login-theme-row .switch {
+  transform: scale(0.95);
+  transform-origin: center;
+}
+/* ===== Dashboard labels readability (light mode) ===== */
+html[data-theme="light"] .port-label,
+html[data-theme="light"] .power-label {
+  color: #0b1220 !important;
+}
+
+/* Dark mode keep labels light (default already) */
+html[data-theme="dark"] .port-label,
+html[data-theme="dark"] .power-label {
+  color: #e0e0ff !important;
+}
+
+/* ===== Gauge cards layout ===== */
+.gauge-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.gauge-grid.amps {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .gauge-grid.amps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .gauge-grid.amps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.gauge-grid.env {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .gauge-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .gauge-grid.amps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gauge-grid.env { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .gauge-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gauge-grid.amps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gauge-grid.env { grid-template-columns: 1fr; }
+}
+
+.gauge-tile {
+  border-radius: 16px;
+  padding: 10px 10px 12px 10px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+html[data-theme="light"] .gauge-tile {
+  background: rgba(0,0,0,0.04) !important;
+  border-color: rgba(0,0,0,0.10) !important;
+}
+
+.gauge-title {
+  font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.gauge-sub {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+.gauge-wrap {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.gauge-svg {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+}
+
+/* Gauge colors */
+.gauge-zone-ok { stroke: #22c55e; }      /* green */
+.gauge-zone-warn { stroke: #f59e0b; }    /* orange */
+.gauge-zone-bad { stroke: #ef4444; }     /* red */
+
+.gauge-track { stroke: rgba(255,255,255,0.18); }
+html[data-theme="light"] .gauge-track { stroke: rgba(0,0,0,0.10); }
+
+.gauge-needle { stroke: #1d4ed8; }
+html[data-theme="dark"] .gauge-needle { stroke: #93c5fd; }
+
+.gauge-text {
+  font-size: 12px;
+  font-weight: bold;
+}
+
+html[data-theme="light"] .gauge-text,
+html[data-theme="light"] .gauge-title,
+html[data-theme="light"] .gauge-sub {
+  color: #0b1220 !important;
+}
