@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>داشبورد</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body, input, button {
+      font-family: Tahoma, sans-serif !important;
+    }
+
+    /* پورت‌ها (دسکتاپ) */
+    .ports-row {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      direction: ltr;
+    }
+
+    .port-icon-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 4px 4px;
+      cursor: pointer;
+    }
+
+    .port-icon-wrap img {
+      display: block;
+      width: 32px;
+      height: 32px;
+    }
+
+    .port-label {
+      margin-top: 2px;
+      font-size: 11px;
+    }
+
+    /* رله‌ها */
+    .power-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 12px;
+    }
+
+    .power-icon-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 8px 12px;
+      width: 60px;
+      cursor: pointer;
+    }
+
+    .power-icon-wrap img {
+      display: block;
+      width: 40px;
+      height: 40px;
+    }
+
+    .power-label {
+      margin-top: 4px;
+      font-size: 12px;
+    }
+
+    /* Tooltip با چند خط متن */
+    .tooltip {
+      position: fixed;
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      max-width: 260px;
+      z-index: 9999;
+      white-space: pre-line;
+      pointer-events: none;
+    }
+
+    /* حالت موبایل: پورت‌ها در ۳ ردیف ۸تایی با فاصلهٔ عمودی مناسب */
+    @media (max-width: 600px) {
+      .ports-row {
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        grid-auto-rows: auto;
+        row-gap: 18px;
+        column-gap: 4px;
+        justify-items: center;
+        direction: ltr;
+      }
+      .port-icon-wrap { margin: 0; }
+    }
+  </style>
+</head>
+<body class="dash-body">
+  <!-- Popup -->
+  <div id="popup" class="popup hidden">
+    <div class="popup-content">
+      <div class="popup-title" id="popup-title"></div>
+      <div class="popup-message" id="popup-message"></div>
+      <div class="popup-buttons" id="popup-buttons">
+        <button onclick="hidePopup()" class="btn primary small">باشه</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tooltip -->
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <div class="dashboard-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="app-logo">SW</div>
+        <div class="app-name">داشبورد (وضعیت پورت ها)</div>
+      </div>
+
+      <div class="topbar-right">
+        <div id="clock" class="clock-text"></div>
+        <div class="theme-switch" title="Dark/Light">
+          <label class="switch">
+            <input id="themeToggle" type="checkbox">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="side-menu">
+        <a href="/dashboard" class="side-item active">
+          <span class="side-icon">📊</span>
+          <span class="side-text">داشبورد</span>
+        </a>
+        <a href="/settings" class="side-item">
+          <span class="side-icon">⚙️</span>
+          <span class="side-text">تنظیمات</span>
+        </a>
+        <a href="/tooltip" class="side-item">
+          <span class="side-icon">💬</span>
+          <span class="side-text">راهنما (Tooltip)</span>
+        </a>
+        <a href="/log" class="side-item">
+          <span class="side-icon">📜</span>
+          <span class="side-text">لاگ</span>
+        </a>
+        <a href="/timer" class="side-item">
+          <span class="side-icon">⏱</span>
+          <span class="side-text">تایمر</span>
+        </a>
+        <a href="/logout" class="side-item">
+          <span class="side-icon">🚪</span>
+          <span class="side-text">خروج</span>
+        </a>
+      </nav>
+
+      <main class="dash-main">
+        <!-- پورت‌های شبکه -->
+        <section class="card glass neon">
+          <h3 class="card-title">پورت‌های شبکه</h3>
+          <div class="ports-row" id="portsRow"></div>
+          <div style="text-align:center;margin-top:8px;">
+            <button class="btn secondary small" onclick="confirmToggleAllPorts(true)">روشن کردن همه‌ی پورت‌ها</button>
+            <button class="btn secondary small" onclick="confirmToggleAllPorts(false)">خاموش کردن همه‌ی پورت‌ها</button>
+          </div>
+        </section>
+
+        <!-- رله‌ها -->
+        <section class="card glass light">
+          <h3 class="card-title">رله‌ها</h3>
+          <div class="power-row" id="relaysRow"></div>
+          <div style="text-align:center;margin-top:8px;">
+            <button class="btn secondary small" onclick="confirmToggleAllRelays(true)">روشن کردن همه‌ی رله‌ها</button>
+            <button class="btn secondary small" onclick="confirmToggleAllRelays(false)">خاموش کردن همه‌ی رله‌ها</button>
+          </div>
+        </section>
+
+        <!-- وضعیت -->
+        <section class="card glass status-card">
+          <div class="status-label">وضعیت کل خروجی‌ها:</div>
+          <div class="status-text" id="statusText">در حال به‌روزرسانی...</div>
+        </section>
+
+        <!-- ولتمترها -->
+        <section class="card glass light">
+          <h3 class="card-title">ولت‌مترها</h3>
+          <div class="gauge-grid" id="voltGrid"></div>
+        </section>
+
+        <!-- آمپرمترها -->
+        <section class="card glass light">
+          <h3 class="card-title">آمپرمترها</h3>
+          <div class="gauge-grid amps" id="ampGrid"></div>
+        </section>
+
+        <!-- دما / رطوبت -->
+        <section class="card glass light">
+          <h3 class="card-title">دما و رطوبت</h3>
+          <div class="gauge-grid env" id="envGrid"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // -------- Theme (Dark/Light) --------
+    (function initTheme() {
+      const saved = localStorage.getItem('theme');
+      const theme = saved || 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+    }
+
+    function initThemeToggle(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      el.checked = (cur === 'light');
+      el.addEventListener('change', () => setTheme(el.checked ? 'light' : 'dark'));
+    }
+
+    // -------- Clock --------
+    function updateClock() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = ('0' + (now.getMonth()+1)).slice(-2);
+      const d = ('0' + now.getDate()).slice(-2);
+      const hh = ('0' + now.getHours()).slice(-2);
+      const mm = ('0' + now.getMinutes()).slice(-2);
+      const ss = ('0' + now.getSeconds()).slice(-2);
+      const el = document.getElementById('clock');
+      if (el) el.textContent = y + '/' + m + '/' + d + ' ' + hh + ':' + mm + ':' + ss;
+    }
+
+    // -------- Popup --------
+    function showPopup(title, msg) {
+      document.getElementById('popup-title').textContent = title || '';
+      document.getElementById('popup-message').textContent = msg || '';
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML = '<button onclick="hidePopup()" class="btn primary small">باشه</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+    function hidePopup() {
+      document.getElementById('popup').classList.add('hidden');
+    }
+
+    // -------- Tooltip --------
+    const tooltip = document.getElementById('tooltip');
+
+    function onIconHover(ev) {
+      const wrap = ev.currentTarget;
+      const label = wrap.dataset.tooltip || wrap.dataset.label || '';
+      if (!label.trim()) return;
+
+      tooltip.textContent = label;
+      tooltip.classList.remove('hidden');
+
+      const rect = wrap.getBoundingClientRect();
+      const ttRect = tooltip.getBoundingClientRect();
+      const top = rect.top - ttRect.height - 6;
+      const left = rect.left + rect.width / 2 - ttRect.width / 2;
+
+      tooltip.style.top = top + 'px';
+      tooltip.style.left = left + 'px';
+    }
+    function hideTooltip() {
+      tooltip.classList.add('hidden');
+    }
+
+    // -------- Toggle outputs --------
+    function onIconClick(ev) {
+      ev.preventDefault();
+      const wrap = ev.currentTarget;
+      const ch = parseInt(wrap.dataset.ch, 10);
+      if (isNaN(ch)) return;
+
+      fetch('/toggle?ch=' + ch, { cache: 'no-store' })
+        .then(resp => resp.text())
+        .then(txt => {
+          if (txt.startsWith('ERROR:')) showPopup('خطا', txt.substring(6));
+          else setTimeout(updateRelaysStatus, 200);
+        })
+        .catch(err => {
+          console.log(err);
+          showPopup('خطا', 'عدم دسترسی یا خطا در ارتباط با سرور');
+        });
+    }
+
+    function addPortIcon(portsRow, portNum) {
+      const ch = portNum - 1;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'port-icon-wrap';
+      wrap.dataset.ch = ch;
+      wrap.dataset.label = 'پورت ' + portNum;
+
+      const img = document.createElement('img');
+      img.src = '/img/ethernet_red.png';
+      img.alt = 'Port ' + portNum;
+
+      const lbl = document.createElement('div');
+      lbl.className = 'port-label';
+      lbl.textContent = portNum.toString();
+
+      wrap.appendChild(img);
+      wrap.appendChild(lbl);
+      wrap.addEventListener('click', onIconClick);
+      wrap.addEventListener('mouseenter', onIconHover);
+      wrap.addEventListener('mouseleave', hideTooltip);
+
+      portsRow.appendChild(wrap);
+    }
+
+    function createIcons() {
+      const portsRow = document.getElementById('portsRow');
+      const relaysRow = document.getElementById('relaysRow');
+
+      for (let portNum = 1; portNum <= 24; portNum++) addPortIcon(portsRow, portNum);
+
+      for (let relNum = 1; relNum <= 8; relNum++) {
+        const ch = 24 + (relNum - 1);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'power-icon-wrap';
+        wrap.dataset.ch = ch;
+        wrap.dataset.label = 'رله ' + relNum;
+
+        const img = document.createElement('img');
+        img.src = '/img/power-red.png';
+        img.alt = 'Relay ' + relNum;
+
+        const lbl = document.createElement('div');
+        lbl.className = 'power-label';
+        lbl.textContent = relNum.toString();
+
+        wrap.appendChild(img);
+        wrap.appendChild(lbl);
+        wrap.addEventListener('click', onIconClick);
+        wrap.addEventListener('mouseenter', onIconHover);
+        wrap.addEventListener('mouseleave', hideTooltip);
+
+        relaysRow.appendChild(wrap);
+      }
+    }
+
+    function applyTooltips(json) {
+      const portMap = {};
+      (json.ports || []).forEach(p => {
+        const lines = (p.texts || []).filter(t => t && t.trim().length > 0);
+        portMap[p.id] = lines.join('\n');
+      });
+      const relayMap = {};
+      (json.relays || []).forEach(r => {
+        const lines = (r.texts || []).filter(t => t && t.trim().length > 0);
+        relayMap[r.id] = lines.join('\n');
+      });
+
+      document.querySelectorAll('.port-icon-wrap').forEach(wrap => {
+        const portNo = parseInt(wrap.dataset.ch, 10) + 1;
+        wrap.dataset.tooltip = portMap[portNo] || '';
+      });
+      document.querySelectorAll('.power-icon-wrap').forEach(wrap => {
+        const relNo = parseInt(wrap.dataset.ch, 10) - 24 + 1;
+        wrap.dataset.tooltip = relayMap[relNo] || '';
+      });
+    }
+
+    function loadTooltips() {
+      fetch('/api/tooltips', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(applyTooltips)
+        .catch(err => console.log(err));
+    }
+
+    function updateRelaysStatus() {
+      fetch('/relays.txt', { cache: 'no-store' })
+        .then(resp => resp.text())
+        .then(txt => {
+          const stEl = document.getElementById('statusText');
+          stEl.textContent = txt;
+
+          document.querySelectorAll('.port-icon-wrap').forEach(wrap => {
+            const ch = parseInt(wrap.dataset.ch, 10);
+            const img = wrap.querySelector('img');
+            const bit = (ch < txt.length) ? txt.charAt(ch) : '0';
+            img.src = (bit === '1') ? '/img/ethernet_green.png' : '/img/ethernet_red.png';
+          });
+
+          document.querySelectorAll('.power-icon-wrap').forEach(wrap => {
+            const ch = parseInt(wrap.dataset.ch, 10);
+            const img = wrap.querySelector('img');
+            const bit = (ch < txt.length) ? txt.charAt(ch) : '0';
+            img.src = (bit === '1') ? '/img/power-green.png' : '/img/power-red.png';
+          });
+        })
+        .catch(err => {
+          console.log(err);
+          document.getElementById('statusText').textContent = 'خطا در خواندن وضعیت';
+        });
+    }
+
+    function confirmToggleAllPorts(on) {
+      const msg = on
+        ? 'آیا مطمئن هستید می‌خواهید همه پورت‌ها را روشن کنید؟'
+        : 'آیا مطمئن هستید می‌خواهید همه پورت‌ها را خاموش کنید؟';
+      document.getElementById('popup-title').textContent = 'تأیید';
+      document.getElementById('popup-message').textContent = msg;
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn danger small" onclick="doToggleAllPorts(' + (on ? 'true' : 'false') + ')">بله</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">خیر</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function doToggleAllPorts(on) {
+      fetch('/api/toggleAllPorts', {
+        method: 'POST',
+        body: new URLSearchParams({ mode: on ? 'on' : 'off' }),
+        cache: 'no-store'
+      })
+      .then(r => r.text())
+      .then(txt => {
+        hidePopup();
+        if (txt.startsWith('ERROR:')) showPopup('خطا', txt.substring(6));
+        else setTimeout(updateRelaysStatus, 200);
+      })
+      .catch(err => {
+        console.log(err);
+        showPopup('خطا', 'عدم دسترسی یا خطا در ارتباط با سرور');
+      });
+    }
+
+    function confirmToggleAllRelays(on) {
+      const msg = on
+        ? 'آیا مطمئن هستید می‌خواهید همه رله‌ها را روشن کنید؟'
+        : 'آیا مطمئن هستید می‌خواهید همه رله‌ها را خاموش کنید؟';
+      document.getElementById('popup-title').textContent = 'تأیید';
+      document.getElementById('popup-message').textContent = msg;
+      const btns = document.getElementById('popup-buttons');
+      btns.innerHTML =
+        '<button class="btn danger small" onclick="doToggleAllRelays(' + (on ? 'true' : 'false') + ')">بله</button>' +
+        '<button class="btn secondary small" onclick="hidePopup()">خیر</button>';
+      document.getElementById('popup').classList.remove('hidden');
+    }
+
+    function doToggleAllRelays(on) {
+      fetch('/api/toggleAllRelays', {
+        method: 'POST',
+        body: new URLSearchParams({ mode: on ? 'on' : 'off' }),
+        cache: 'no-store'
+      })
+      .then(r => r.text())
+      .then(txt => {
+        hidePopup();
+        if (txt.startsWith('ERROR:')) showPopup('خطا', txt.substring(6));
+        else setTimeout(updateRelaysStatus, 200);
+      })
+      .catch(err => {
+        console.log(err);
+        showPopup('خطا', 'عدم دسترسی یا خطا در ارتباط با سرور');
+      });
+    }
+
+    // ---------------- Gauges (SVG) ----------------
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+    // value -> angle on semicircle: -120..120 deg
+    function valueToAngle(value, min, max) {
+      const t = (value - min) / (max - min);
+      const tt = clamp(t, 0, 1);
+      return -120 + tt * 240;
+    }
+
+    function polarToXY(cx, cy, r, angDeg) {
+      const a = (angDeg - 90) * Math.PI / 180;
+      return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+    }
+
+    function arcPath(cx, cy, r, a0, a1) {
+      const p0 = polarToXY(cx, cy, r, a0);
+      const p1 = polarToXY(cx, cy, r, a1);
+      const large = (Math.abs(a1 - a0) > 180) ? 1 : 0;
+      const sweep = (a1 > a0) ? 1 : 0;
+      return `M ${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`;
+    }
+
+    function gaugeTile(title, unit, cfg) {
+      const tile = document.createElement('div');
+      tile.className = 'gauge-tile';
+
+      const t = document.createElement('div');
+      t.className = 'gauge-title';
+      t.textContent = title;
+      tile.appendChild(t);
+
+      const wrap = document.createElement('div');
+      wrap.className = 'gauge-wrap';
+      tile.appendChild(wrap);
+
+      // SVG gauge
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', '0 0 240 150');
+      svg.classList.add('gauge-svg');
+
+      const cx = 120, cy = 130, r = 95;
+
+      // Track
+      const track = document.createElementNS(svgNS, 'path');
+      track.setAttribute('d', arcPath(cx, cy, r, -120, 120));
+      track.setAttribute('fill', 'none');
+      track.setAttribute('stroke-width', '16');
+      track.setAttribute('class', 'gauge-track');
+      svg.appendChild(track);
+
+      // Zones (ok/warn/bad)
+      // zones are defined in cfg as fractions or value ranges
+      function addZone(a0, a1, cls) {
+        const p = document.createElementNS(svgNS, 'path');
+        p.setAttribute('d', arcPath(cx, cy, r, a0, a1));
+        p.setAttribute('fill', 'none');
+        p.setAttribute('stroke-width', '16');
+        p.setAttribute('stroke-linecap', 'round');
+        p.setAttribute('class', cls);
+        svg.appendChild(p);
+      }
+
+      // Background tick marks (simple)
+      for (let k = 0; k <= 12; k++) {
+        const a = -120 + k * 20;
+        const p0 = polarToXY(cx, cy, r - 20, a);
+        const p1 = polarToXY(cx, cy, r - 8, a);
+        const tick = document.createElementNS(svgNS, 'line');
+        tick.setAttribute('x1', p0.x); tick.setAttribute('y1', p0.y);
+        tick.setAttribute('x2', p1.x); tick.setAttribute('y2', p1.y);
+        tick.setAttribute('stroke', 'rgba(255,255,255,0.25)');
+        tick.setAttribute('stroke-width', '2');
+        svg.appendChild(tick);
+      }
+
+      // Zones based on cfg.thresholds
+      // cfg: {min,max, okMin, okMax}
+      const aMin = -120, aMax = 120;
+      const aOk0 = valueToAngle(cfg.okMin, cfg.min, cfg.max);
+      const aOk1 = valueToAngle(cfg.okMax, cfg.min, cfg.max);
+
+      // warn low: min..okMin
+      if (cfg.okMin > cfg.min) addZone(aMin, aOk0, 'gauge-zone-warn');
+      // ok: okMin..okMax
+      addZone(aOk0, aOk1, 'gauge-zone-ok');
+      // bad high: okMax..max
+      if (cfg.okMax < cfg.max) addZone(aOk1, aMax, 'gauge-zone-bad');
+
+      // Needle group
+      const needle = document.createElementNS(svgNS, 'line');
+      needle.setAttribute('x1', cx);
+      needle.setAttribute('y1', cy);
+      needle.setAttribute('x2', cx);
+      needle.setAttribute('y2', cy - 70);
+      needle.setAttribute('stroke-width', '4');
+      needle.setAttribute('stroke-linecap', 'round');
+      needle.setAttribute('class', 'gauge-needle');
+      svg.appendChild(needle);
+
+      const hub = document.createElementNS(svgNS, 'circle');
+      hub.setAttribute('cx', cx);
+      hub.setAttribute('cy', cy);
+      hub.setAttribute('r', 7);
+      hub.setAttribute('fill', 'rgba(0,0,0,0.35)');
+      svg.appendChild(hub);
+
+      const txt = document.createElementNS(svgNS, 'text');
+      txt.setAttribute('x', cx);
+      txt.setAttribute('y', 90);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('class', 'gauge-text');
+      txt.textContent = '--';
+      svg.appendChild(txt);
+
+      wrap.appendChild(svg);
+
+      const sub = document.createElement('div');
+      sub.className = 'gauge-sub';
+      sub.textContent = `بازه: ${cfg.min} تا ${cfg.max} ${unit}`;
+      tile.appendChild(sub);
+
+      // updater
+      tile._setValue = function(v) {
+        const ang = valueToAngle(v, cfg.min, cfg.max);
+        needle.setAttribute('transform', `rotate(${ang} ${cx} ${cy})`);
+        txt.textContent = `${v.toFixed(cfg.dp ?? 1)} ${unit}`;
+      };
+
+      return tile;
+    }
+
+    // Create all gauge tiles once
+    function buildGauges() {
+      const voltGrid = document.getElementById('voltGrid');
+      const ampGrid = document.getElementById('ampGrid');
+      const envGrid = document.getElementById('envGrid');
+
+      // Voltmeters
+      const vMains = gaugeTile('ولتاژ برق شهری', 'V', { min: 0, max: 260, okMin: 200, okMax: 230, dp: 0 });
+      const vGen   = gaugeTile('ولتاژ ژنراتور', 'V',   { min: 0, max: 260, okMin: 200, okMax: 230, dp: 0 });
+      const vDC    = gaugeTile('ولتاژ DC', 'V',        { min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
+      const vBatt  = gaugeTile('ولتاژ باتری', 'V',     { min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
+      const vSolar = gaugeTile('ولتاژ پنل خورشیدی', 'V',{ min: 0, max: 32,  okMin: 20,  okMax: 28,  dp: 1 });
+      
+      
+
+      voltGrid.appendChild(vMains);
+      voltGrid.appendChild(vBatt);
+      voltGrid.appendChild(vSolar);
+      voltGrid.appendChild(vGen);
+      voltGrid.appendChild(vDC);
+
+// Ammeters (range depends on your design; placeholder 0..30A)
+const aMains = gaugeTile('جریان برق شهری', 'A',   { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+const aGen   = gaugeTile('جریان ژنراتور', 'A',    { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+const aDC    = gaugeTile('جریان DC', 'A',         { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+const aBatt  = gaugeTile('جریان باتری', 'A',      { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+const aSolar = gaugeTile('جریان پنل خورشیدی', 'A',        { min: 0, max: 30, okMin: 0, okMax: 22, dp: 1 });
+
+
+
+
+ampGrid.appendChild(aBatt);
+ampGrid.appendChild(aSolar);
+ampGrid.appendChild(aGen);
+ampGrid.appendChild(aMains);
+ampGrid.appendChild(aDC);
+
+      // Env
+      const tBatt = gaugeTile('دمای باتری', '°C', { min: -10, max: 70, okMin: 0, okMax: 45, dp: 0 });
+      const tAmb  = gaugeTile('دمای محیط', '°C', { min: -10, max: 70, okMin: 0, okMax: 40, dp: 0 });
+      const hum   = gaugeTile('رطوبت محیط', '%',  { min: 0, max: 100, okMin: 20, okMax: 60, dp: 0 });
+
+      envGrid.appendChild(tBatt);
+      envGrid.appendChild(tAmb);
+      envGrid.appendChild(hum);
+
+      // Save references globally for updates
+      window.__gauges = { vMains, vBatt, vSolar, vGen, vDC, aBatt, aSolar, aGen, aMains, aDC, tBatt, tAmb, hum };
+    }
+
+    // For now: demo values. Later: replace with fetch('/api/power')
+    function updateGaugeDemo() {
+      const g = window.__gauges;
+      if (!g) return;
+
+      // نمونه‌ها (می‌تونی تغییر بدی)
+      g.vMains._setValue(218);
+      g.vBatt._setValue(25.6);
+      g.vSolar._setValue(27.1);
+      g.vGen._setValue(0);
+      g.vDC._setValue(24.2);
+
+      g.aBatt._setValue(6.4);
+      g.aSolar._setValue(3.1);
+      g.aGen._setValue(0.0);
+      g.aMains._setValue(1.8);
+      g.aDC._setValue(4.2);
+
+      g.tBatt._setValue(32);
+      g.tAmb._setValue(28);
+      g.hum._setValue(41);
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      initThemeToggle('themeToggle');
+      updateClock();
+      setInterval(updateClock, 1000);
+
+      createIcons();
+      loadTooltips();
+      updateRelaysStatus();
+      setInterval(updateRelaysStatus, 5000);
+
+      buildGauges();
+      updateGaugeDemo();
+      setInterval(updateGaugeDemo, 3000);
+    });
+  </script>
+</body>
+</html>
