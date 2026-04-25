@@ -486,9 +486,7 @@
       const p1 = polarToXY(cx, cy, r, a1);
       const large = (Math.abs(a1 - a0) > 180) ? 1 : 0;
       const sweep = (a1 > a0) ? 1 : 0;
-      return 'M ' + p0.x.toFixed(2) + ' ' + p0.y.toFixed(2) +
-             ' A ' + r + ' ' + r + ' 0 ' + large + ' ' + sweep +
-             ' ' + p1.x.toFixed(2) + ' ' + p1.y.toFixed(2);
+      return `M ${p0.x.toFixed(2)} ${p0.y.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`;
     }
 
     /**
@@ -553,9 +551,11 @@
 
       // Minor ticks (no label)
       if (cfg.minorStep) {
+        const labelStepRnd = cfg.labelStep ? Math.round(cfg.labelStep) : 0;
         for (var v = cfg.min; v <= cfg.max; v += cfg.minorStep) {
-          // skip if also a major tick (will be drawn separately)
-          if (cfg.labelStep && (Math.round(v - cfg.min) % Math.round(cfg.labelStep) === 0)) continue;
+          // skip positions that coincide with a major (labeled) tick
+          const isMajorTick = labelStepRnd > 0 && Math.round(v - cfg.min) % labelStepRnd === 0;
+          if (isMajorTick) continue;
           var ang = valueToAngle(v, cfg.min, cfg.max);
           var p0  = polarToXY(cx, cy, minorTickInner, ang);
           var p1  = polarToXY(cx, cy, minorTickOuter, ang);
