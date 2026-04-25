@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <title>لاگ رویدادها</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body, textarea, button {
+      font-family: Tahoma, sans-serif !important;
+      font-size: 14px !important;
+    }
+    .log-area {
+      width: 100%;
+      min-height: 300px;
+      max-height: 500px;
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      padding: 8px;
+      border-radius: 6px;
+      overflow-y: auto;
+      direction: ltr;
+      white-space: pre;
+      text-align: left;
+    }
+  </style>
+</head>
+<body class="dash-body">
+  <div class="dashboard-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="app-logo">SW</div>
+        <div class="app-name">لاگ</div>
+      </div>
+
+      <div class="topbar-right">
+        <div id="clock" class="clock-text"></div>
+
+        <div class="theme-switch" title="Dark/Light">
+          <label class="switch">
+            <input id="themeToggle" type="checkbox">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav class="side-menu">
+        <a href="/dashboard" class="side-item">
+          <span class="side-icon">📊</span>
+          <span class="side-text">داشبورد</span>
+        </a>
+        <a href="/settings" class="side-item">
+          <span class="side-icon">⚙️</span>
+          <span class="side-text">تنظیمات</span>
+        </a>
+        <a href="/tooltip" class="side-item">
+          <span class="side-icon">💬</span>
+          <span class="side-text">راهنما (Tooltip)</span>
+        </a>
+        <a href="/log" class="side-item active">
+          <span class="side-icon">📜</span>
+          <span class="side-text">لاگ</span>
+        </a>
+        <a href="/timer" class="side-item">
+          <span class="side-icon">⏱</span>
+          <span class="side-text">تایمر</span>
+        </a>
+        <a href="/logout" class="side-item">
+          <span class="side-icon">🚪</span>
+          <span class="side-text">خروج</span>
+        </a>
+      </nav>
+
+      <main class="dash-main">
+        <section class="card glass light">
+          <h3 class="card-title">لاگ تغییر رله‌ها (/relay.log)</h3>
+          <div class="settings-form">
+            <button class="btn secondary small" onclick="loadLog()">به‌روز��سانی</button>
+          </div>
+          <div id="logArea" class="log-area">در حال خواندن...</div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // -------- Theme (Dark/Light) --------
+    (function initTheme() {
+      const saved = localStorage.getItem('theme');
+      const theme = saved || 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+
+    function setTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+    }
+
+    function initThemeToggle(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      el.checked = (cur === 'light');
+      el.addEventListener('change', () => setTheme(el.checked ? 'light' : 'dark'));
+    }
+
+    // -------- Clock --------
+    function updateClock() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = ('0' + (now.getMonth()+1)).slice(-2);
+      const d = ('0' + now.getDate()).slice(-2);
+      const hh = ('0' + now.getHours()).slice(-2);
+      const mm = ('0' + now.getMinutes()).slice(-2);
+      const ss = ('0' + now.getSeconds()).slice(-2);
+      const el = document.getElementById('clock');
+      if (el) el.textContent = y + '/' + m + '/' + d + ' ' + hh + ':' + mm + ':' + ss;
+    }
+
+    function loadLog() {
+      const area = document.getElementById('logArea');
+      area.textContent = 'در حال خواندن...';
+      fetch('/api/relayLog', { cache: 'no-store' })
+        .then(r => r.text())
+        .then(t => {
+          if (t === 'NO_LOG') {
+            area.textContent = 'فعلاً لاگی ثبت نشده است.';
+          } else if (t.startsWith('ERROR:')) {
+            area.textContent = 'خطا: ' + t.substring(6);
+          } else {
+            const lines = t.replace(/\r/g, '').split('\n');
+            if (lines.length === 0) {
+              area.textContent = '';
+              return;
+            }
+            const header = lines[0];
+            const bodyLines = lines.slice(1).filter(l => l.trim().length > 0);
+            bodyLines.reverse();
+            area.textContent = header + '\n' + bodyLines.join('\n');
+          }
+        })
+        .catch(err => {
+          console.log(err);
+          area.textContent = 'خطا در خواندن لاگ';
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      initThemeToggle('themeToggle');
+      updateClock();
+      setInterval(updateClock, 1000);
+      loadLog();
+    });
+  </script>
+</body>
+</html>
