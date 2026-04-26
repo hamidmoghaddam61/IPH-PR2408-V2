@@ -219,16 +219,7 @@ void setup() {
 
 void loop() {
   Esp2Link::Frame fr;
-  while (linkSerial.available()) {
-  int b = linkSerial.read();
-  Serial.print("RX byte: 0x");
-  if (b < 16) Serial.print("0");
-  Serial.println(b, HEX);
-}
-delay(10);
-return;
   while (espLink.poll(fr)) {
-    // اگر ACK_REQ بود، حتماً ACK بدهیم (برای sendWithAck در ESP1)
     if (fr.flags & Esp2Link::FL_ACK_REQ) {
       espLink.sendAck(fr.seq);
     }
@@ -236,7 +227,7 @@ return;
     if (fr.type == Esp2Link::MSG_PING) {
       Serial.println("[ESP2] PING received -> PONG");
       espLink.send(Esp2Link::MSG_PONG, nullptr, 0, 0);
-    } 
+    }
     else if (fr.type == Esp2Link::MSG_TELEM_REQ) {
       Serial.println("[ESP2] TELEM_REQ received -> TELEM_RSP");
       sendDemoTelem(fr.seq);
